@@ -1,6 +1,6 @@
 /*
  *  pgn4web javascript chessboard
- *  copyright (C) 2009, 2010 Paolo Casaschi
+ *  copyright (C) 2009-2012 Paolo Casaschi
  *  see README file and http://pgn4web.casaschi.net
  *  for credits, license and more details
  */
@@ -9,49 +9,39 @@
 // some parameters that might need reconfiguring for implementing pgn4web on your server
 //
 
-//
-// the email for the project, default = 'pgn4web@casaschi.net'
-// used by: home.html, board-generator.html and pgn4web.js
-//
-pgn4web_project_email = 'pgn4web@casaschi.net';
-//
+"use strict";
 
 //
-// the URL for the project's blog, default = 'http://pgn4web-blog.casaschi.net'
-// used by: home.html
-//
-pgn4web_project_blog = 'http://pgn4web-blog.casaschi.net';
-//
-
-//
-// the URL for the board widged to be used in the board-generator tool, default = full URL of local board.html file = pgn4web_board_url = location.protocol + "//" + location.hostname+location.pathname.substr(0, location.pathname.lastIndexOf("/")) + "/board.html";
+// the URL for the board widged to be used in the board-generator tool, default = "board.html"
 // used by: board-generator.html
 //
-pgn4web_board_url = location.protocol + "//" + location.hostname+location.pathname.substr(0, location.pathname.lastIndexOf("/")) + "/board.html";
-// pgn4web_board_url = 'http://pgn4web-board.casaschi.net';
+var pgn4web_board_url = "board.html";
+// var pgn4web_board_url = "http://pgn4web-board.casaschi.net/";
 //
 
 //
-// the URL for the board generator tool, default = 'board-generator.html'
-// used by: board-generator.html, widget.html
+// the URL for the board generator tool, default = "board-generator.html"
+// used by: board-generator.html, home.html, widget.html
 //
-pgn4web_generator_url = 'board-generator.html';
-// pgn4web_generator_url = 'http://pgn4web-board-generator.casaschi.net';
-//
-
-//
-// the URL for the content of the live games broadcast, default = 'live-compact.html'
-// used by: live.html
-//
-pgn4web_live_compact_url = 'live-compact.html';
-// pgn4web_live_compact_url = 'http://pgn4web-live-compact.casaschi.net';
+var pgn4web_generator_url = "board-generator.html";
+// var pgn4web_generator_url = "http://pgn4web-board-generator.casaschi.net/";
 //
 
 //
-// the URL for the game viewer tool, default = 'demo.html?frame=inputform'
-// used by: home.html
+// login/key pair for the bitly URL shortening service, default blank (then tinyurl is used instead)
+// used by: board-generator.html
 //
-pgn4web_viewer_url = 'demo.html?frame=inputform';
-// pgn4web_viewer_url = 'viewer.php';
+var pgn4web_bitly_login = "";
+var pgn4web_bitly_apiKey = "";
+// var pgn4web_bitly_login = "";
+// var pgn4web_bitly_apiKey = "";
+//
+
+//
+// pointer URL for the live games broadcast, default = "."
+// used by: flash-replacement.html, home.html, live.html, live/index.html
+//
+var pgn4web_live_pointer_url = ".";
+// var pgn4web_live_pointer_url = "http://pgn4web-live.casaschi.net";
 //
 

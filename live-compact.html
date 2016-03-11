@@ -1,8 +1,9 @@
+<!DOCTYPE HTML>
 <html>
 
 <!--
   pgn4web javascript chessboard
-  copyright (C) 2009, 2010 Paolo Casaschi
+  copyright (C) 2009-2015 Paolo Casaschi
   see README file and http://pgn4web.casaschi.net
   for credits, license and more details
 -->
@@ -17,127 +18,124 @@
 
 -->
 
-<link href="live.css" type="text/css" rel="stylesheet" />
+<link href="live-compact.css" type="text/css" rel="stylesheet" />
 
-<link rel="shortcut icon" href="pawn.ico" />
+<link rel="icon" sizes="16x16" href="pawn.ico" />
 
 <script src="pgn4web.js" type="text/javascript"></script>
-<script type="text/javascript">
 
-  if ((gup("demo") == "true") || (gup("demo") == "t") || 
+<script src="fide-lookup.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+  "use strict";
+
+  var demoFlag, alertFlag;
+  if ((gup("demo") == "true") || (gup("demo") == "t") ||
       (gup("refreshDemo") == "true") || (gup("refreshDemo") == "t")) {
     demoFlag = true; alertFlag = true;
   } else { demoFlag = false; alertFlag = false; }
 
-  pgnFile_default = detectBaseLocation() ?
+  var pgnFile_default = detectBaseLocation() ?
     location.protocol + "//" + location.hostname + location.pathname.replace(/\/[^\/]*$/, "/live/live.pgn") :
     "live/live.pgn";
   // accepts pgnData as alias for pgnFile for consistency with board.html
-  if ((pgnFile = gup("pgnData")) === "") { 
+  var pgnFile;
+  if ((pgnFile = gup("pgnData")) === "") {
     if ((pgnFile = gup("pgnFile")) === "") {
-      pgnFile = pgnFile_default; 
+      pgnFile = pgnFile_default;
     }
   }
 
-  if ((refreshMinutes = gup("refreshMinutes")) === "") { 
+  var refreshMinutes;
+  if ((refreshMinutes = gup("refreshMinutes")) === "") {
     refreshMinutes = 1;
   } else {
-    testMinutes = refreshMinutes + "";
+    var testMinutes = refreshMinutes + "";
     if ((testMinutes.match(/[^0-9\.]/)) || (refreshMinutes === 0)) {
-      if (alertFlag) { 
-	      alert("ERROR: refreshMinutes parameter must be a positive number.\n" +
-		    "Supplied " + testMinutes + "; defaulting to 1."); 
+      if (alertFlag) {
+        alert("ERROR: refreshMinutes parameter must be a positive number.\n" +
+              "Supplied " + testMinutes + "; defaulting to 1.");
       }
       refreshMinutes = 1;
     }
   }
 
+  var iniGame;
   if ((iniGame = gup("initialGame")) === "") {iniGame = 1; }
-  iniGameError = "ERROR: initialGame parameter must be a positive number or " +
-                 "'first', 'last' or 'random'.\n" +
-                 "Supplied " + iniGame + "; defaulting to 1.";
-  if (parseInt(iniGame, 10)) {
-    if (parseInt(iniGame, 10) < 1) { 
-      if (alertFlag) { alert(iniGameError); }
-      iniGame = 1; 
-    }
-  } else {
-    if ((iniGame != "first") && (iniGame != "last") && (iniGame != "random")) { 
-      if (alertFlag) { alert(iniGameError); }
-      iniGame = 1; 
-    }
-  }
 
   if ((gup("showComments") == "true") || (gup("showComments") == "t")) { SetCommentsIntoMoveText(true); }
   else { SetCommentsIntoMoveText(false); }
 
   if ((gup("help") == "true") || (gup("help") == "t")) { developer_help(); }
 
-  SetPgnUrl(pgnFile); 
-  SetImagePath("alpha/26"); 
+  SetPgnUrl(pgnFile);
+  SetImagePath("images/alpha/26");
   SetImageType("png");
   SetHighlightOption(true); // true or false
-  SetGameSelectorOptions(" select a game...", true, 0, 0, 0, 15, 15, 3, 0); // (head, num, chEvent, chSite, chRound, chWhite, chBlack, chResult, chDate)
+  SetGameSelectorOptions(" select a game...", true, 0, 0, 0, 18, 18, 3, 0); // (head, num, chEvent, chSite, chRound, chWhite, chBlack, chResult, chDate)
 
   SetCommentsOnSeparateLines(true);
-  SetAutoplayDelay(3000); // milliseconds
+  SetAutoplayDelay(1000); // milliseconds
   SetAutostartAutoplay(false);
-  SetAutoplayNextGame(false); // if set, move to the next game at the end of the current game during autoplay
-  SetInitialGame(iniGame); // number of game to be shown at load, from 1 (default); values (keep the quotes) of "first", "last", "random" are accepted; other string values assumed as PGN search string
-  SetInitialHalfmove("end",true); // halfmove number to be shown at load, 0 (default) for start position; values (keep the quotes) of "start", "end", "random" and "comment" (go to first comment) are also accepted. Second parameter if true applies the setting to every selected game instead of startup only (default)
+  SetAutoplayNextGame(false);
+  SetInitialGame(iniGame);
+  SetInitialVariation(0);
+  SetInitialHalfmove("end",true);
   SetShortcutKeysEnabled(true);
 
-  SetLiveBroadcast(refreshMinutes, alertFlag, demoFlag); // set live broadcast; parameters are delay (refresh delay in minutes, 0 means no broadcast, default 0) alertFlag (if true, displays debug error messages, default false) demoFlag (if true starts broadcast demo mode, default false)
+  SetLiveBroadcast(refreshMinutes, alertFlag, demoFlag);
 
-  originalTitle = document.title;
-
-  ticker_string = demoFlag ? " demo" : " help";
-  
-  ticker_counter = 0;
-  function update_ticker() {
-    document.getElementById("ticker").innerHTML = ticker_string.substring(0, ticker_counter) +
-      ticker_string.substring(ticker_counter, ticker_counter + 1).toUpperCase() +
-      ticker_string.substring(ticker_counter + 1);
-    ticker_counter = (ticker_counter + 1) % ticker_string.length;
+  function customFunctionOnCheckLiveBroadcastStatus() {
+    var theObj = document.getElementById("GameLiveStatus");
+    theObj.innerHTML = theObj.title;
+    document.getElementById("playersDetails").className = LiveBroadcastStarted ? "headerHighlighted" : "header";
+    document.getElementById("statusDetails").className = ((!LiveBroadcastStarted) || (LiveBroadcastEnded)) ? "headerHighlighted" : "header";
+    document.getElementById("additionalMessage").innerHTML = LiveBroadcastEnded ? (theObj.innerHTML ? ", " : "") + "click H6 for the next event" : "";
   }
 
   function customFunctionOnPgnTextLoad() {
-      
-    if ((LiveBroadcastStarted) && 
-        (gameEvent[0] != undefined) && (gameEvent[0] !== "")) {
-      document.title = originalTitle + ": " + gameEvent[0];
-    }
-    document.getElementById("playersDetails").className = LiveBroadcastStarted ? 
-                                                          "headerHighlighted" : "header";
-    document.getElementById("statusDetails").className = ((!LiveBroadcastStarted) || (LiveBroadcastEnded)) ? 
-                                                         "headerHighlighted" : "header";
-    document.getElementById("additionalMessage").innerHTML = LiveBroadcastEnded ? ", <a href='javascript: checkForNewLiveEvent();' onFocus='this.blur();' title='click here to check for the start of a new live broadcast event' style='color: inherit;'>check here for a new event</a>" : "";
-
-    update_ticker();
-
     // cope with occasional failures to load the live PGN data
     if ((LiveBroadcastDelay !== 0) && (LiveBroadcastTicker > 0) && (!LiveBroadcastFoundOldGame)) {
+      var thisCurrentGame = currentGame;
       SetInitialGame(iniGame);
-      SetInitialHalfmove("end",true);
+      SetInitialVariation(0);
       setCurrentGameFromInitialGame();
-      Init();
-      GoToInitialHalfmove();
+      if (currentGame != thisCurrentGame) {
+        SetInitialHalfmove("end",true);
+        Init();
+        GoToInitialHalfmove();
+      }
     }
-
   }
 
   function customFunctionOnPgnGameLoad() {
-
-    if ((gameRound[currentGame] !==  undefined) && 
-      (gameRound[currentGame] !== "") && 
-      (gameRound[currentGame] !=  "*") && 
+    var ii, theObj, timeControl, gameTermination;
+    var objectsToTitle = ["GameEvent", "GameSite", "GameDate", "GameWhite", "GameBlack"];
+    for (ii in objectsToTitle) {
+      if (theObj = document.getElementById(objectsToTitle[ii])) { theObj.title = simpleHtmlentitiesDecode(theObj.innerHTML); }
+    }
+    if (timeControl = customPgnHeaderTag("TimeControl")) {
+      if (theObj = document.getElementById("GameWhiteClock")) { theObj.title = simpleHtmlentitiesDecode("timecontrol: " + timeControl); }
+      if (theObj = document.getElementById("GameBlackClock")) { theObj.title = simpleHtmlentitiesDecode("timecontrol: " + timeControl); }
+    } else {
+      if (theObj = document.getElementById("GameWhiteClock")) { theObj.title = ""; }
+      if (theObj = document.getElementById("GameBlackClock")) { theObj.title = ""; }
+    }
+    if (gameTermination = customPgnHeaderTag("Termination")) {
+      if (theObj = document.getElementById("GameResult")) { theObj.title = simpleHtmlentitiesDecode("termination: " + gameTermination); }
+    } else {
+      if (theObj = document.getElementById("GameResult")) { theObj.title = ""; }
+    }
+    if ((gameRound[currentGame] !== undefined) &&
+      (gameRound[currentGame] !== "") &&
+      (gameRound[currentGame] !=  "*") &&
       (gameRound[currentGame] !=  "?")) {
       document.getElementById("roundDetails").innerHTML = "&nbsp;(" + gameRound[currentGame] + ")";
     } else {
       document.getElementById("roundDetails").innerHTML = "";
     }
 
-    if (gameResult[currentGame] !== undefined) { 
+    if (gameResult[currentGame] !== undefined) {
       if ((gameResult[currentGame] == "*") || (gameResult[currentGame] == "?")) {
         document.getElementById("GameResult").className = "headerNosize";
       } else {
@@ -147,19 +145,15 @@
       document.getElementById("GameResult").className = "headerNosize";
       document.getElementById("GameResult").innerHTML = "";
     }
-    theObject = document.getElementById("GameText");
-    if ((theObject !== null) && 
-      (theObject.scrollHeight !== undefined) && 
-      (theObject.scrollTop !== undefined) &&
-      (CurrentPly == StartPly + PlyNumber)) {
-      theObject.scrollTop = theObject.scrollHeight;
+    theObj = document.getElementById("GameText");
+    if ((theObj) && (theObj.scrollHeight !== undefined) && (theObj.scrollTop !== undefined) && ((!LiveBroadcastFoundOldGame) || (LiveBroadcastOldCurrentPlyLast && (LiveBroadcastOldCurrentPly < StartPly+PlyNumber)))) {
+      theObj.scrollTop = theObj.scrollHeight;
     }
   }
 
   function customFunctionOnMove() {
-    document.getElementById("systemMessage").style.display = 
-      pgn4webMoveComments[CurrentPly] !== "" ? "none" : "inline";
-    document.getElementById("pgn4webMessage").innerHTML = pgn4webMoveComments[CurrentPly];
+    document.getElementById("systemMessage").style.display =
+      customPgnCommentTag("pgn4web", "pgn4webMessage") !== "" ? "none" : "inline";
   }
 
   var checkForNewLiveEventInterval = null;
@@ -170,8 +164,11 @@
     checkForNewLiveEventInterval = setTimeout('refreshPgnSource();document.getElementById("messageLine").style.visibility = "visible";', 111);
   }
 
+  // customShortcutKey_Shift_1 defined by fide-lookup.js
+  // customShortcutKey_Shift_2 defined by fide-lookup.js
 
-function gup( name ){
+
+function gup(name) {
 
   name = name.replace(/[\[]/,"\\\[").replace(/[\]]/,"\\\]");
   var regexS = "[\\?&]"+name+"=([^&#]*)";
@@ -179,13 +176,13 @@ function gup( name ){
   // regexS = regexS+"(?!.*"+regexS+")"; // matches the LAST occurrence
   var regex = new RegExp( regexS, "i" );
   var results = regex.exec( window.location.href );
-  if( results !== null ) { return decodeURIComponent(results[1]); }
+  if (results !== null) { return decodeURIComponent(results[1]); }
 
   // allows for short version of the URL parameters, for instance sC matches squareColor
-  compact_name = name.charAt(0);
-    for(i=1; i<name.length; i++){
-      if (name.charAt(i).match(/[A-Z]/)) { compact_name = compact_name + name.charAt(i).toLowerCase(); }
-    }
+  var compact_name = name.charAt(0);
+  for (var i=1; i<name.length; i++) {
+    if (name.charAt(i).match(/[A-Z]/)) { compact_name = compact_name + name.charAt(i).toLowerCase(); }
+  }
   name = compact_name;
 
   name = name.replace(/[\[]/,"\\\[").replace(/[\]]/,"\\\]");
@@ -195,15 +192,15 @@ function gup( name ){
   regex = new RegExp( regexS, "i" );
 
   results = regex.exec( window.location.href );
-  if( results !== null ) { return decodeURIComponent(results[1]); }
+  if (results !== null) { return decodeURIComponent(results[1]); }
 
   return "";
 }
 
 function developer_help() {
-  alert("pgn4web live.html parameters" + "\n" + 
+  alert("pgn4web live-compact.html parameters" + "\n" +
     " - pgnData = " + pgnFile + "; PGN file to load (default " + pgnFile_default + ")" + "\n" +
-    " - initialGame = " + iniGame + "; initial game to load, a number or first, last, random (default 1)" + "\n" +
+    " - initialGame = " + iniGame + "; initial game to load, a number or first, last, random or a search string (default 1)" + "\n" +
     " - refreshMinutes = " + refreshMinutes + "; refresh interval in minutes, decimals allowed (default 1)" + "\n" +
     " - showComments = " + commentsIntoMoveText + "; (default false)" + "\n" +
     " - refreshDemo = " + demoFlag + "; sets live demo mode (default false)" + "\n" +
@@ -212,25 +209,25 @@ function developer_help() {
 
 function user_help() {
 
-  plural = refreshMinutes != 1 ? "s" : "";
-  demoString = demoFlag ? "demo mode enabled" + "\n" : "";
+  var plural = refreshMinutes != 1 ? "s" : "";
+  var demoString = demoFlag ? "demo mode enabled" + "\n" : "";
 
-  helpText = "Chess games live broadcast using pgn4web v" + pgn4web_version + "\n" +
+  var helpText = "Chess games live broadcast using pgn4web v" + pgn4web_version + "\n" +
     "\n" +
-    "Games are automatically updated every " + 
-    refreshMinutes + " minute" + plural  + " from the remote file " +
+    "Games are automatically updated every " +
+    refreshMinutes + " minute" + plural + " from the remote file " +
     "(" + pgnFile + "). " +
     "If the shown game is kept at the last available move, " +
-    "upon refresh the chessboard steps forward automatically " +
-    "to the game's latest position. " + 
-    "The refresh stops once all games are finished. " + 
+    "upon refresh the chessboard automatically advances " +
+    "to the game's latest position. " +
+    "The refresh stops once all games are finished. " +
     "If no games are shown, just wait for the live broadcast to start. " +
     "There is no need to reload the webpage to refresh games, " +
-    "but it's possible to manually force a refresh by clicking on square H6." + "\n" + 
+    "but it's possible to manually force a refresh by clicking on square H6." + "\n" +
     "\n" +
     "Chessboard squares are input buttons controlling games display (full list by clicking square G8), including:" + "\n" +
     "\n" +
-    "A1 / H1: game start / end" + "\n" + 
+    "A1 / H1: game start / end" + "\n" +
     "D1 / E1: move back / forwards" + "\n" +
     "A3 / H3: load first / last game" + "\n" +
     "C3 / F3: load previous / next game" + "\n" +
@@ -271,8 +268,8 @@ function user_help() {
 
 <!-- width 450 = 460 outerTable width - 2 * 5 cellpadding -->
 <table width=450 cellpadding=0 cellspacing=0 border=0>
-<tr>
-<td align=center valign=middle style="padding-bottom: 4px;">
+<tr height=27>
+<td align=center valign=bottom style="padding-bottom: 4px;">
 <div id="GameSelector"></div>
 </td>
 </tr>
@@ -301,9 +298,9 @@ function user_help() {
 </td>
 <td width=320 align=center valign=middle style="padding: 3px;">
 <div style="width: 314px; height: 1.3em; line-height: 1.3em; overflow: hidden; white-space: nowrap;">
-<span id="GameWhite"></span> 
-&nbsp;&nbsp;&nbsp; 
-<span id="GameBlack"></span> 
+<span id="GameWhite"></span>
+&nbsp;&nbsp;&nbsp;
+<span id="GameBlack"></span>
 </div>
 </td>
 <td width=65 align=right valign=middle style="padding: 3px;">
@@ -322,9 +319,10 @@ function user_help() {
 </td>
 
 <!-- right column width 204 = (460 outer cell width) - (246 left column width) - (2 * 5 cellpaddding) -->
-<td width=206 align=left valign=top style="padding-top: 8px; padding-bottom: 8px; padding-left: 0px; padding-right: 0px;">
+<td width=204 align=left valign=top style="padding-top: 8px; padding-bottom: 8px; padding-left: 0px; padding-right: 0px;">
 <!-- height 240 = chessboard size -->
-<div class="movebox" id="GameText" style="height: 240px; padding-right: 5px; overflow-x: hidden; overflow-y: auto;">
+<!-- width 199 = table cell size - 5 padding -->
+<div class="movebox" id="GameText" style="height: 240px; width:199px; padding-right: 5px; overflow-x: hidden; overflow-y: auto;">
 </div>
 </td>
 <tr>
@@ -344,9 +342,9 @@ function user_help() {
 <span id="systemMessage"><span id="GameLiveStatus"></span><span id="additionalMessage"></span></span>
 </div>
 </td>
-<td width=55 align=left valign=middle style="padding: 3px;">
+<td width=55 align=right valign=middle style="padding: 3px;">
 <div style="width: 49px; height: 1.3em; line-height: 1.3em; overflow: hidden; white-space: nowrap;">
-<a id="ticker" class="helplinkNosize" href="javascript: user_help();" onFocus="this.blur()" title="pgn4web live broadcast help">HELP</a>
+<a id="helplink" class="helplinkNosize" href="javascript: user_help();" onFocus="this.blur()" title="pgn4web live broadcast help">help</a>
 </div>
 </td>
 </tr>
@@ -356,12 +354,12 @@ function user_help() {
 </table>
 </center>
 
-<!--
-<script type="text/javascript">document.write(document.getElementById("outerTable").offsetWidth + 
- "x" + document.getElementById("outerTable").offsetHeight);</script>
--->
+<script type="text/javascript">
+  "use strict";
+  var theObj = document.getElementById("helplink");
+  if (demoFlag && theObj) { theObj.innerHTML = "demo"; }
+</script>
 
 </body>
 
 </html>
-

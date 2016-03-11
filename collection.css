@@ -1,26 +1,31 @@
 /*
  *  pgn4web javascript chessboard
- *  copyright (C) 2009, 2010 Paolo Casaschi
+ *  copyright (C) 2009-2013 Paolo Casaschi
  *  see README file and http://pgn4web.casaschi.net
  *  for credits, license and more details
  */
 
-@import url("fonts/pgn4web-fonts.css");
+@import url("fonts/pgn4web-font-LiberationSans.css");
+@import url("fonts/pgn4web-font-ChessSansUsual.css");
 
-html, 
-body { 
-  margin: 0; 
-  padding: 10;
+html,
+body {
+  margin: 0px;
+  padding: 0px;
 }
 
 body {
+  padding: 10px;
   font-family: 'pgn4web Liberation Sans', sans-serif;
   color: black;
   background: white;
 }
 
+div, span, table, tr, td {
+  font-family: 'pgn4web Liberation Sans', sans-serif; /* fixes IE9 body css issue */
+}
+
 .containerTable {
-  border-collapse: collapse;
   width: 100%;
 }
 
@@ -40,12 +45,12 @@ body {
 }
 
 .boardTable {
+  width: 376px;
+  height: 376px;
   border-style: solid;
   border-color: #663300;
   border-width: 3px;
   box-shadow: 0px 0px 20px #663300;
-  -webkit-box-shadow: 0px 0px 20px #663300;
-  -moz-box-shadow: 0px 0px 20px #663300;
 }
 
 .pieceImage {
@@ -86,6 +91,9 @@ body {
   width: 100% !important;
 }
 
+.optionSelectControl {
+}
+
 .buttonControlPlay,
 .buttonControlStop,
 .buttonControl {
@@ -107,25 +115,46 @@ body {
 }
 
 .move,
-.moveOn {
+.variation,
+.comment {
   color: black;
-  font-family: 'pgn4web ChessSansUsual', 'pgn4web Liberation Sans', sans-serif;
-  line-height: 1.3em;
+  line-height: 1.4em;
   font-weight: normal;
-  text-decoration: none;   
+  text-decoration: none;
 }
 
-.moveOn {
-  background: #FFCC99;
+a.move:hover, a.variation:hover {
+  text-decoration: underline;
+}
+
+.move,
+.variation,
+.commentMove {
+  font-family: 'pgn4web ChessSansUsual', 'pgn4web Liberation Sans', sans-serif;
+}
+
+a.move,
+a.variation,
+.commentMove {
+  white-space: nowrap;
 }
 
 .comment,
-.nag {
+.variation {
   color: gray;
 }
 
+a.variation {
+  color: gray;
+}
+
+.moveOn,
+.variationOn {
+  background: #FFCC99;
+}
+
 .label {
-  color: #BBBBBB;
+  color: gray;
   padding-right: 10px;
   text-align: right;
 }
@@ -137,6 +166,10 @@ body {
 .linkItem {
   text-decoration: none;
   color: black;
+}
+
+.linkItem:hover {
+  text-decoration: underline;
 }
 
 .rowSpace {

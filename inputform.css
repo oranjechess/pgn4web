@@ -1,20 +1,43 @@
 /*
  *  pgn4web javascript chessboard
- *  copyright (C) 2009, 2010 Paolo Casaschi
+ *  copyright (C) 2009-2015 Paolo Casaschi
  *  see README file and http://pgn4web.casaschi.net
  *  for credits, license and more details
  */
 
-html, 
-body { 
-  margin: 0; 
-  padding: 0;
+html,
+body {
+  margin: 0px;
+  padding: 0px;
 }
 
 body {
+  padding: 5px;
   font-family: sans-serif;
-  color: black;
-  background: white;
+  font-size: 14px;
+  color: #909090;
+  background: transparent;
+}
+
+a {
+  color: #909090;
+  text-decoration: none;
+}
+
+input, select {
+  -moz-appearance: none;
+  -webkit-appearance: none;
+  border-radius: 0px;
+  color: #909090;
+}
+
+textarea, option {
+  color: #606060;
+}
+
+.boardTable {
+  width: 272px;
+  height: 272px;
 }
 
 .pieceImage {
@@ -28,14 +51,7 @@ body {
 .highlightBlackSquare {
   width: 34px;
   height: 34px;
-  border-width: 1px;
-}
-
-.whiteSquare,
-.blackSquare, 
-.highlightWhiteSquare,
-.highlightBlackSquare {
-  border-style: solid;
+  border-style: none;
 }
 
 .whiteSquare,
@@ -58,7 +74,6 @@ body {
 
 .highlightWhiteSquare,
 .highlightBlackSquare {
-  border-color: #A8A8A8;
 }
 
 .pgnSubmit,
@@ -67,9 +82,9 @@ body {
 .buttonControlStop,
 .buttonControl {
 /* a "width" attribute here must use the !important flag to override default settings */
-  color: #A8A8A8;
   font-weight: bold;
-  font-size: 16px;
+  font-size: 14px;
+  height: 21px;
   border-style: none;
   background-color: #E8E8E8;
   padding: 5px;
@@ -83,6 +98,9 @@ body {
 .selectControl {
 /* a "width" attribute here must use the !important flag to override default settings */
   width: 100% !important;
+}
+
+.optionSelectControl {
 }
 
 .buttonControlSpace {
@@ -99,31 +117,38 @@ body {
 }
 
 .move,
-.moveOn,
-.comment,
-.nag {
+.variation,
+.comment {
   font-size: 14px;
 }
 
-.move,
-.moveOn {
-  color: black;
+a.move,
+a.variation,
+.commentMove {
+  white-space: nowrap;
 }
 
-.moveOn {
-  background: #C2C9D1;
+.move {
+}
+
+a.move {
 }
 
 .comment,
-.nag {
-  color: gray;
+.variation {
+}
+
+a.variation {
+}
+
+.moveOn,
+.variationOn {
 }
 
 .pgnheader {
-  color: #A8A8A8; 
   padding-left: 30px;
-  line-height: 27px;
-  font-size: 18px; 
+  line-height: 21px;
+  font-size: 14px;
   font-weight: bold;
   white-space: nowrap;
 }

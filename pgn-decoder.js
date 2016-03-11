@@ -1,6 +1,6 @@
 /*
  *  pgn4web javascript chessboard
- *  copyright (C) 2009, 2010 Paolo Casaschi
+ *  copyright (C) 2009-2013 Paolo Casaschi
  *  see README file and http://pgn4web.casaschi.net
  *  for credits, license and more details
  *
@@ -14,35 +14,36 @@
 //   xxx = encoded text (using LetterCodes below)
 //   0 = zero char (version marker)
 
+"use strict";
+
 var encodingCharSet_dec;
 var encodingCharSet_enc;
 var encodingCharSet = encodingCharSet_dec = "$0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
 var encodingVersion_dec;
 var encodingVersion_enc;
 var encodingVersion = encodingVersion_dec = 1;
+var errorString;
 
-if (((encodingCharSet_enc != undefined) && (encodingCharSet_enc != encodingCharSet_dec)) || 
+if (((encodingCharSet_enc != undefined) && (encodingCharSet_enc != encodingCharSet_dec)) ||
     ((encodingVersion_enc != undefined) && (encodingVersion_enc != encodingVersion_dec))) {
   errorString = "error: PGN encoding/decoding mismatch";
-  if (typeof myAlert == "function") { myAlert(errorString); } 
+  if (typeof myAlert == "function") { myAlert(errorString); }
   else { alert(errorString); }
 }
 
 function DecodePGN(bytes) {
 
   if (bytes.charAt(bytes.length - 1) != encodingCharSet.charAt(encodingVersion)) {
-    errorString = "error: PGN encoding version mismatch (e:" + 
+    errorString = "error: PGN encoding version mismatch (e:" +
                   bytes.charAt(bytes.length - 1) + " d:" + encodingCharSet.charAt(encodingVersion) + ")";
     if (typeof myAlert == "function") { myAlert(errorString); }
     else { alert(errorString); }
-  } else {
-    bytes.length--;
   }
 
-  originalLength = parseInt(bytes.match(/^[0-9]*/), 10);
+  var originalLength = parseInt(bytes.match(/^[0-9]*/), 10);
   bytes = bytes.replace(/^[0-9]*\$/,"");
 
-  l = new Array();
+  var l = new Array();
   l[0] = -146;
   l[1] = -111;
   l[2] = -66;
@@ -555,14 +556,13 @@ function DecodePGN(bytes) {
   l[509] = 202;
   l[510] = 203;
 
-  e=b=a=0;
-  o="";
+  var a=0, b=0, e=0, i, o="";
 
-  function B() { if(a===0) { b=encodingCharSet.indexOf(bytes.charAt(e++)); a=6; } return ((b>>--a)&0x01); }
-  
-  while(originalLength>0) { i=0; 
-    while(l[i]<0) { 
-      if(B()) { i=-l[i]; }
+  function B() { if (a===0) { b=encodingCharSet.indexOf(bytes.charAt(e++)); a=6; } return ((b>>--a)&0x01); }
+
+  while(originalLength>0) { i=0;
+    while(l[i]<0) {
+      if (B()) { i=-l[i]; }
       else { i++; }
     }
     o+=String.fromCharCode(l[i]);

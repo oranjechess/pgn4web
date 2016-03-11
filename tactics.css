@@ -1,14 +1,14 @@
 /*
  *  pgn4web javascript chessboard
- *  copyright (C) 2009, 2010 Paolo Casaschi
+ *  copyright (C) 2009-2013 Paolo Casaschi
  *  see README file and http://pgn4web.casaschi.net
  *  for credits, license and more details
  */
 
-html, 
-body { 
-  margin: 0; 
-  padding: 0; 
+html,
+body {
+  margin: 0px;
+  padding: 0px;
 }
 
 body {
@@ -18,25 +18,27 @@ body {
 }
 
 .boardTable {
-  border-style: double; 
+  border-style: double;
   border-color: #c9ad6f;
   border-width: 3px;
   background-color: #f2d798;
+  width: 246px;
+  height: 246px;
 }
 
 .pieceImage {
-  width: 24;
-  height: 24;
+  width: 24px;
+  height: 24px;
 }
 
 .whiteSquare,
 .blackSquare,
 .highlightWhiteSquare,
 .highlightBlackSquare {
-  width: 26;
-  height: 26;
+  width: 26px;
+  height: 26px;
   border-style: solid;
-  border-width: 2;
+  border-width: 2px;
 }
 
 .whiteSquare,
@@ -60,6 +62,9 @@ body {
 /* a "width" attribute here must use the !important flag to override default settings */
 }
 
+.optionSelectControl {
+}
+
 .buttonControlPlay,
 .buttonControlStop,
 .buttonControl {
@@ -79,21 +84,34 @@ body {
 }
 
 .move,
-.moveOn,
 .comment,
-.nag {
-  color: black;
+.variation {
   font-weight: normal;
-  font-size: 14;
+  font-size: 14px;
   text-decoration: none;
 }
 
-.moveOn {
-  background: yellow;
+a.move,
+a.variation,
+.commentMove {
+  white-space: nowrap;
+}
+
+.move {
+  color: black;
 }
 
 .comment,
-.nag {
+.variation {
   color: #444444;
+}
+
+a.variation {
+  color: #444444;
+}
+
+.moveOn,
+.variationOn {
+  background: yellow;
 }
 

@@ -2,92 +2,154 @@
 
 /*
  *  pgn4web javascript chessboard
- *  copyright (C) 2009, 2010 Paolo Casaschi
+ *  copyright (C) 2009-2015 Paolo Casaschi
  *  see README file and http://pgn4web.casaschi.net
  *  for credits, license and more details
  */
 
-error_reporting(E_ERROR | E_PARSE);
+error_reporting(E_ALL | E_STRICT);
 
-$tmpDir = "viewer";
+/*
+ *  URL parameters:
+ *
+ *  headlessPage = true | false (default false)
+ *  hideForm = true | false (default false)
+ *  pgnData (or pgnUrl) = (default null)
+ *  pgnText = (default null)
+ *
+ */
+
+$pgnDebugInfo = "";
+
+$tmpDir = "php://temp";
 $fileUploadLimitBytes = 4194304;
 $fileUploadLimitText = round(($fileUploadLimitBytes / 1048576), 0) . "MB";
+$fileUploadLimitIniText = ini_get("upload_max_filesize");
+if ($fileUploadLimitIniText === "") { $fileUploadLimitIniText = "unknown"; }
+
+// it would be nice here to evaluate ini_get('allow_fopen_url') and flag the issue (possibly disabling portions of the input forms), but the return values of ini_get() for boolean values are totally unreliable, so we have to leave with the generic server error message when trying to load a remote URL while allow_fopen_url is disabled in php.ini
 
 $zipSupported = function_exists('zip_open');
-if ($zipSupported) { $pgnDebugInfo = ""; }
-else { $pgnDebugInfo = $pgnDebugInfo . "ZIP support unavailable from server, missing php ZIP library<br/>"; }
+if (!$zipSupported) { $pgnDebugInfo = $pgnDebugInfo . "\\n" . "ZIP support unavailable from server, missing php ZIP library"; }
+
+$http_response_header_status = "";
+$http_response_header_last_modified = "";
 
 $debugHelpText = "a flashing chessboard signals errors in the PGN data, click on the top left chessboard square for debug messages";
 
-if (!($goToView = get_pgn())) { $pgnText = $krabbeStartPosition = get_krabbe_position(); }
-set_mode();
-print_header();
-print_form();
-check_tmpDir();
-print_chessboard();
-print_footer();
+$headlessPage = strtolower(get_param("headlessPage", "hp", ""));
 
-function set_mode() {
+$hideForm = strtolower(get_param("hideForm", "hf", ""));
+$hideFormCss = ($hideForm == "true") || ($hideForm == "t") ? "display:none;" : "";
 
-  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $tmpDir, $debugHelpText, $pgnDebugInfo;
-  global $fileUploadLimitText, $fileUploadLimitBytes, $krabbeStartPosition, $goToView, $mode, $zipSupported;
+$forceEncodingFrom = get_param("forceEncodingFrom", "fef", "");
 
-  $mode = $_REQUEST["mode"];
+$startPosition = '[Event ""] [Site ""] [Date ""] [Round ""] [White ""] [Black ""] [Result ""] ' . ((($hideForm == "true") || ($hideForm == "t")) ? '' : '{ please enter chess games in PGN format using the form at the top of the page }');
 
-  if (!$mode) {
-    $mode = "normal";
-    $ua = $_SERVER["HTTP_USER_AGENT"];
-    $mobileagents = array ("Android", "Blackberry", "iPhone", "iPod", "Nokia", "Opera Mini", "Palm", "PlayStation Portable", "Pocket", "Smartphone", "Symbian", "WAP", "Windows CE"); 
-    foreach ($mobileagents as $ma) {
-      if(stristr($ua, $ma)) { $mode = "compact"; } 
+
+$presetURLsArray = array();
+function addPresetURL($label, $javascriptCode) {
+  global $presetURLsArray;
+  array_push($presetURLsArray, array('label' => $label, 'javascriptCode' => $javascriptCode));
+}
+
+// modify the viewer-preset-URLs.php file to add preset URLs for the viewer's form
+include 'viewer-preset-URLs.php';
+
+
+$pgnOnly = get_param("pgnOnly", "po", "");
+$generateParameter = get_param("generateParameter", "gp", "");
+if (($pgnOnly == "true") || ($pgnOnly == "t")) {
+
+  if (!get_pgn()) { header("HTTP/1.1 204 No Content"); }
+  header("content-type: application/x-chess-pgn");
+  header("content-disposition: inline; filename=games.pgn");
+  if ($http_response_header_last_modified) { header($http_response_header_last_modified); }
+  if ($pgnText) { print $pgnText; }
+
+} elseif (($generateParameter == "true") || ($generateParameter == "t")) {
+
+  header("content-type: text/html; charset=utf-8");
+  $pgnUrl = get_param("pgnData", "pd", "");
+  if ($pgnUrl == "") { $pgnUrl = get_param("pgnUrl", "pu", ""); }
+  $pgnLink = $_SERVER['SCRIPT_NAME'] . urlencode("?po=t&pd=" . $pgnUrl);
+  print("<div style='font-family:sans-serif; padding:1em;'><a style='text-decoration:none; color:black;' href='" . $pgnLink . "'>" . $pgnLink . "</a></div>");
+
+} else {
+
+  header("content-type: text/html; charset=utf-8");
+  if ($goToView = get_pgn()) {
+    $pgnText = str_replace(array("&", "<", ">"), array("&amp;", "&lt;", "&gt;"), $pgnText);
+  } else {
+    $pgnText = preg_match("/^error:/", $pgnStatus) ? '[Event ""] [Site ""] [Date ""] [Round ""] [White ""] [Black ""] [Result ""] { error loading PGN data, click square A8 for more details }' : $startPosition;
+  }
+  print_header();
+  print_form();
+  check_tmpDir();
+  print_menu("board");
+  print_chessboard_one();
+  print_menu("moves");
+  print_chessboard_two();
+  print_footer();
+  print_menu("bottom");
+  print_html_close();
+
+}
+
+
+function get_param($param, $shortParam, $default) {
+  if (isset($_REQUEST[$param])) { return $_REQUEST[$param]; }
+  if (isset($_REQUEST[$shortParam])) { return $_REQUEST[$shortParam]; }
+  return $default;
+}
+
+
+function http_parse_headers($headerFields) {
+
+  global $http_response_header_status, $http_response_header_last_modified;
+
+  $retVal = array();
+  foreach ($headerFields as $field) {
+    if (preg_match('/([^:]+): (.+)/m', $field, $match)) {
+      $match[1] = preg_replace('/(?<=^|[\x09\x20\x2D])./e', 'strtoupper("\0")', strtolower(trim($match[1])));
+      if (isset($retVal[$match[1]])) {
+        $retVal[$match[1]] = array($retVal[$match[1]], $match[2]);
+      } else {
+        $retVal[$match[1]] = trim($match[2]);
+      }
+    } else if (preg_match('/^\S+\s+\d+\s/m', $field)) {
+      $retVal["status"] = $field;
     }
   }
+
+  if (isset($retVal["status"])) { $http_response_header_status = $retVal["status"]; }
+  if (isset($retVal["Last-Modified"])) { $http_response_header_last_modified = "Last-Modified: " . $retVal["Last-Modified"]; }
+
+  return $retVal;
 }
 
-function get_krabbe_position() {
 
-  $krabbePositions = array('',
-    '[Round "1"][FEN "rnq2rk1/1pn3bp/p2p2p1/2pPp1PP/P1P1Pp2/2N2N2/1P1B1P2/R2QK2R b KQ - 1 16"] 16... Nc6',
-    '[Round "2"][FEN "8/8/4kpp1/3p1b2/p6P/2B5/6P1/6K1 b - - 2 47"] 47... Bh3',
-    '[Round "3"][FEN "5rk1/pp4pp/4p3/2R3Q1/3n4/2q4r/P1P2PPP/5RK1 b - - 1 23"] 23. Qg3',
-    '[Round "4"][FEN "1r6/4k3/r2p2p1/2pR1p1p/2P1pP1P/pPK1P1P1/P7/1B6 b - - 0 48"] 48... Rxb3+',
-    '[Round "5"][FEN "2k2b1r/pb1r1p2/5P2/1qnp4/Npp3Q1/4B1P1/1P3PBP/R4RK1 w - - 4 21"] 21. Qg7',
-    '[Round "6"][FEN "r1bq1rk1/1p3ppp/p1pp2n1/3N3Q/B1PPR2b/8/PP3PPP/R1B3K1 w - - 0 14"] 14. Rxh4',
-    '[Round "7"][FEN "r4k1r/1b2bPR1/p4n2/3p4/4P2P/1q2B2B/PpP5/1K4R1 w - - 0 26"] 26. Bh6',
-    '[Round "8"][FEN "r1b2r1k/4qp1p/p2ppb1Q/4nP2/1p1NP3/2N5/PPP4P/2KR1BR1 w - - 4 18"] 18. Nc6',
-    '[Round "9"][FEN "8/5B2/6Kp/6pP/5b2/p7/1k3P2/8 b - - 3 69"] 69... Be3',
-    '[Round "10"][FEN "4r1k1/q6p/2p4P/2P2QP1/1p6/rb2P3/1B6/1K4RR w - - 1 38"] 38. Qxh7+',
-    '[Round "11"][FEN "6k1/3Q4/5p2/5P2/8/1KP5/PP4qp/2B5 w - - 0 99"] 99. Bg5',
-    '[Round "12"][FEN "k4b1r/p3pppp/B1p2n2/3rB1N1/7q/8/PPP2P2/R2Q1RK1 w - - 1 18"] 18. c4',
-    '[Round "13"][FEN "1nbk1b1r/r3pQpp/pq2P3/1p1P2B1/2p5/2P5/5PPP/R3KB1R b KQ - 0 15"] 15... Rd7',
-    '[Round "14"][FEN "5r2/7k/1pPP3P/8/4p3/3p4/P4R1P/7K b - - 0 48"] 48... e3',
-    '[Round "15"][FEN "rnb1kr2/pp1p1pQp/6q1/4PpB1/1P6/8/1PP2PPP/2KR3R w q - 2 15"] 15. e6',
-    '[Round "16"][FEN "7k/1p1P2pp/p7/3P4/1Q5P/5pPK/PP3r2/1q5B b - - 1 37"] 37... h5',
-    '[Round "17"][FEN "r2q1rk1/pp2bpp1/4p2p/2pPB2P/2P3n1/3Q2N1/PP3PP1/2KR3R w - - 1 17"] 17. Bxg7',
-    '[Round "18"][FEN "r2qk2r/1b3ppp/p2p1b2/2nNp3/1R2P3/2P5/1PN2PPP/3QKB1R w Kkq - 3 17"] 17. Rxb7',
-    '[Round "19"][FEN "r3kbnr/p1pp1qpp/b1n1P3/6N1/1p6/8/Pp3PPP/RNBQR1K1 b kq - 0 12"] 12... O-O-O',
-    '[Round "20"][FEN "r2qkb1r/pb1p1p1p/1pn2np1/2p1p3/2P1P3/2NP1NP1/PP3PBP/R1BQ1RK1 w kq - 0 9"] 9. Nxe5',
-    '');
-
-  return $krabbePositions[rand(0, count($krabbePositions)-1)];
+function http_response_header_isInvalid() {
+   global $http_response_header_status;
+   return $http_response_header_status ? preg_match("/^\S+\s+[45]\d\d\s/", $http_response_header_status) : FALSE;
 }
+
 
 function get_pgn() {
 
-  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $tmpDir, $debugHelpText, $pgnDebugInfo;
-  global $fileUploadLimitText, $fileUploadLimitBytes, $krabbeStartPosition, $goToView, $mode, $zipSupported;
+  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $forceEncodingFrom, $tmpDir, $debugHelpText, $pgnDebugInfo;
+  global $fileUploadLimitIniText, $fileUploadLimitText, $fileUploadLimitBytes, $startPosition, $goToView, $zipSupported;
+  global $http_response_header_status, $http_response_header_last_modified;
 
-  $pgnDebugInfo = $pgnDebugInfo . $_REQUEST["debug"];
+  $pgnDebugInfo = $pgnDebugInfo . get_param("debug", "d", "");
 
-  $pgnText = $_REQUEST["pgnText"];
-  if (!$pgnText) { $pgnText = $_REQUEST["pgnTextbox"]; }
-  if (!$pgnText) { $pgnText = $_REQUEST["pt"]; }
+  $pgnText = get_param("pgnText", "pt", "");
 
-  $pgnUrl = $_REQUEST["pgnUrl"];
-  if (!$pgnUrl) { $pgnUrl = $_REQUEST["pu"]; }
+  $pgnUrl = get_param("pgnData", "pd", "");
+  if ($pgnUrl == "") { $pgnUrl = get_param("pgnUrl", "pu", ""); }
 
   if ($pgnText) {
-    $pgnStatus = "PGN games from textbox input";
+    $pgnStatus = "info: games from textbox input";
     $pgnTextbox = $pgnText = str_replace("\\\"", "\"", $pgnText);
 
     $pgnText = preg_replace("/\[/", "\n\n[", $pgnText);
@@ -96,69 +158,90 @@ function get_pgn() {
     $pgnText = preg_replace("/\]\s*\[/", "]\n[", $pgnText);
     $pgnText = preg_replace("/^\s*\[/", "[", $pgnText);
     $pgnText = preg_replace("/\n[\s*\n]+/", "\n\n", $pgnText);
-    
+
     $pgnTextbox = $pgnText;
 
     return TRUE;
   } else if ($pgnUrl) {
-    $pgnStatus = "PGN games from URL: <a href='" . $pgnUrl . "'>" . $pgnUrl . "</a>";
-    $isPgn = preg_match("/\.(pgn|txt)$/i",$pgnUrl);
-    $isZip = preg_match("/\.zip$/i",$pgnUrl);
+    $pgnStatus = "info: games from $pgnUrl";
+    $isPgn = preg_match("/\.(pgn|txt)$/i", preg_replace("/[?#].*$/", "", $pgnUrl));
+    $isZip = preg_match("/\.zip$/i", preg_replace("/[?#].*$/", "", $pgnUrl));
     if ($isZip) {
       if (!$zipSupported) {
-        $pgnStatus = "unable to open zipfile&nbsp; &nbsp;<span style='color: gray;'>please <a style='color: gray;' href='" . $pgnUrl. "'>download zipfile locally</a> and submit extracted PGN</span>";
+        $pgnStatus = "error: zipfile support unavailable, unable to open $pgnUrl";
         return FALSE;
       } else {
-        $zipFileString = "<a href='" . $pgnUrl . "'>zip URL</a>";
-        $tempZipName = tempnam($tmpDir, "pgn4webViewer");
-        $pgnUrlHandle = fopen($pgnUrl, "rb");
-        $tempZipHandle = fopen($tempZipName, "wb");
-        $copiedBytes = stream_copy_to_stream($pgnUrlHandle, $tempZipHandle, $fileUploadLimitBytes + 1, 0);
-        fclose($pgnUrlHandle);
-        fclose($tempZipHandle);
-        if (($copiedBytes > 0) & ($copiedBytes <= $fileUploadLimitBytes)) {
-          $pgnSource = $tempZipName;
-        } else {
-          $pgnStatus = "failed to get " . $zipFileString . ": file not found, file exceeds " . $fileUploadLimitText . " size limit or server error";
-          if (($tempZipName) & (file_exists($tempZipName))) { unlink($tempZipName); }
+        $tempZipName = tempnam($tmpDir, "pgn4webViewer_");
+        // $pgnUrlOpts tries forcing following location redirects
+        // depending on server configuration, the script might still fail if the ZIP URL is redirected
+        $pgnUrlOpts = array("http" => array("follow_location" => TRUE, "max_redirects" => 20));
+        $pgnUrlHandle = @fopen($pgnUrl, "rb", false, stream_context_create($pgnUrlOpts));
+        if (!$pgnUrlHandle) {
+          $pgnStatus = "error: failed to get $pgnUrl: file not found or server error";
+          if ((isset($tempZipName)) && ($tempZipName) && (file_exists($tempZipName))) { unlink($tempZipName); }
           return FALSE;
+        } else {
+          $tempZipHandle = fopen($tempZipName, "wb");
+          $copiedBytes = stream_copy_to_stream($pgnUrlHandle, $tempZipHandle, $fileUploadLimitBytes + 1, 0);
+          fclose($pgnUrlHandle);
+          fclose($tempZipHandle);
+          if (isset($http_response_header)) { http_parse_headers($http_response_header); }
+          if ((($copiedBytes > 0) && ($copiedBytes <= $fileUploadLimitBytes)) && (!http_response_header_isInvalid())) {
+            $pgnSource = $tempZipName;
+          } else {
+            $pgnStatus = "error: failed to get $pgnUrl: " . (http_response_header_isInvalid() ? "server error: $http_response_header_status" : "file not found, file size exceeds $fileUploadLimitText form limit, $fileUploadLimitIniText server limit or server error");
+            if ((isset($tempZipName)) && ($tempZipName) && (file_exists($tempZipName))) { unlink($tempZipName); }
+            return FALSE;
+          }
         }
       }
     } else {
       $pgnSource = $pgnUrl;
     }
   } elseif (count($_FILES) == 0) {
-    $pgnStatus = "please enter chess games in PGN format&nbsp; &nbsp;<span style='color: gray;'>file and URL inputs must not exceed " . $fileUploadLimitText . "</span>";
+    $pgnStatus = "info: no games supplied";
     return FALSE;
-  } elseif ($_FILES['pgnFile']['error'] == UPLOAD_ERR_OK) {
+  } elseif ($_FILES['pgnFile']['error'] === UPLOAD_ERR_OK) {
     $pgnFileName = $_FILES['pgnFile']['name'];
-    $pgnStatus = "PGN games from file: " . $pgnFileName;
+    $pgnStatus = "info: games from file $pgnFileName";
     $pgnFileSize = $_FILES['pgnFile']['size'];
     if ($pgnFileSize == 0) {
-      $pgnStatus = "failed uploading PGN games: file not found, file empty or upload error";
+      $pgnStatus = "info: failed uploading games: file not found, file empty or upload error";
       return FALSE;
     } elseif ($pgnFileSize > $fileUploadLimitBytes) {
-      $pgnStatus = "failed uploading PGN games: file exceeds " . $fileUploadLimitText . " size limit";
+      $pgnStatus = "error: failed uploading games: file size exceeds $fileUploadLimitText limit";
       return FALSE;
-    } else { 
+    } else {
       $isPgn = preg_match("/\.(pgn|txt)$/i",$pgnFileName);
       $isZip = preg_match("/\.zip$/i",$pgnFileName);
       $pgnSource = $_FILES['pgnFile']['tmp_name'];
     }
-  } elseif ($_FILES['pgnFile']['error'] == (UPLOAD_ERR_INI_SIZE | UPLOAD_ERR_FORM_SIZE)) {
-    $pgnStatus = "failed uploading PGN games: file exceeds " . $fileUploadLimitText . " size limit";
-    return FALSE;
-  } elseif ($_FILES['pgnFile']['error'] == (UPLOAD_ERR_PARTIAL | UPLOAD_ERR_NO_FILE | UPLOAD_ERR_NO_TMP_DIR | UPLOAD_ERR_CANT_WRITE | UPLOAD_ERR_EXTENSION)) {
-    $pgnStatus = "failed uploading PGN games: server error";
-    return FALSE;
   } else {
-    $pgnStatus = "failed uploading PGN games";
+    $pgnStatus = "error: failed uploading games: ";
+    switch ($_FILES['pgnFile']['error']) {
+      case UPLOAD_ERR_INI_SIZE:
+      case UPLOAD_ERR_FORM_SIZE:
+        $pgnStatus = $pgnStatus . "file size exceeds $fileUploadLimitText form limit or $fileUploadLimitIniText server limit";
+        break;
+      case UPLOAD_ERR_PARTIAL:
+      case UPLOAD_ERR_NO_FILE:
+        $pgnStatus = $pgnStatus . "file missing or truncated";
+        break;
+      case UPLOAD_ERR_NO_TMP_DIR:
+      case UPLOAD_ERR_CANT_WRITE:
+      case UPLOAD_ERR_EXTENSION:
+        $pgnStatus = $pgnStatus . "server error";
+        break;
+      default:
+        $pgnStatus = $pgnStatus . "unknown upload error";
+        break;
+    }
     return FALSE;
   }
 
   if ($isZip) {
     if ($zipSupported) {
-      if ($pgnUrl) { $zipFileString = "<a href='" . $pgnUrl . "'>zip URL</a>"; }
+      if ($pgnUrl) { $zipFileString = $pgnUrl; }
       else { $zipFileString = "zip file"; }
       $pgnZip = zip_open($pgnSource);
       if (is_resource($pgnZip)) {
@@ -169,52 +252,62 @@ function get_pgn() {
             }
             zip_entry_close($zipEntry);
           } else {
-            $pgnStatus = "failed reading " . $zipFileString . " content";
+            $pgnStatus = "error: failed reading $zipFileString content";
             zip_close($pgnZip);
-            if (($tempZipName) & (file_exists($tempZipName))) { unlink($tempZipName); }
+            if ((isset($tempZipName)) && ($tempZipName) && (file_exists($tempZipName))) { unlink($tempZipName); }
             return FALSE;
           }
         }
         zip_close($pgnZip);
-        if (($tempZipName) & (file_exists($tempZipName))) { unlink($tempZipName); }
+        if ((isset($tempZipName)) && ($tempZipName) && (file_exists($tempZipName))) { unlink($tempZipName); }
         if (!$pgnText) {
-          $pgnStatus = "PGN games not found in " . $zipFileString;
-         return FALSE;
-        } else {
-          return TRUE;
+          $pgnStatus = "error: games not found in $zipFileString";
+          return FALSE;
         }
       } else {
-        $pgnStatus = "failed opening " . $zipFileString;
+        if ((isset($tempZipName)) && ($tempZipName) && (file_exists($tempZipName))) { unlink($tempZipName); }
+        $pgnStatus = "error: failed opening $zipFileString";
         return FALSE;
       }
     } else {
-      $pgnStatus = "ZIP support unavailable from this server&nbsp; &nbsp;<span style='color: gray;'>only PGN files are supported</span>";
-      return FALSE;         
+      $pgnStatus = "error: ZIP support unavailable from this server, only PGN files are supported";
+      return FALSE;
     }
-  }
-
-  if($isPgn) {
-    if ($pgnUrl) { $pgnFileString = "<a href='" . $pgnUrl . "'>pgn URL</a>"; }
+  } elseif ($isPgn) {
+    if ($pgnUrl) { $pgnFileString = $pgnUrl; }
     else { $pgnFileString = "pgn file"; }
-    $pgnText = file_get_contents($pgnSource, NULL, NULL, 0, $fileUploadLimitBytes + 1);
-    if (!$pgnText) {
-      $pgnStatus = "failed reading " . $pgnFileString . ": file not found or server error";
+    $pgnText = @file_get_contents($pgnSource, NULL, NULL, 0, $fileUploadLimitBytes + 1);
+    if (isset($http_response_header)) { http_parse_headers($http_response_header); }
+    if ((!$pgnText) || (($pgnUrl) && (http_response_header_isInvalid()))) {
+      $pgnStatus = "error: failed reading $pgnFileString: " . (http_response_header_isInvalid() ? "server error: $http_response_header_status" : "file not found or server error");
       return FALSE;
     }
-    if ((strlen($pgnText) == 0) | (strlen($pgnText) > $fileUploadLimitBytes)) {
-      $pgnStatus = "failed reading " . $pgnFileString . ": file exceeds " . $fileUploadLimitText . " size limit or server error";
+    if ((strlen($pgnText) == 0) || (strlen($pgnText) > $fileUploadLimitBytes)) {
+      $pgnStatus = "error: failed reading $pgnFileString: file size exceeds $fileUploadLimitText form limit, $fileUploadLimitIniText server limit or server error";
       return FALSE;
     }
-    return TRUE;
-  } 
-
-  if($pgnSource) {
+  } elseif ($pgnSource) {
     if ($zipSupported) {
-      $pgnStatus = "only PGN and ZIP (zipped pgn) files are supported";
+      $pgnStatus = "error: only PGN and ZIP (zipped pgn) files are supported";
     } else {
-      $pgnStatus = "only PGN files are supported&nbsp; &nbsp;<span style='color: gray;'>ZIP support unavailable from this server</span>";
+      $pgnStatus = "error: only PGN files are supported, ZIP support unavailable from this server";
     }
     return FALSE;
+  }
+
+  $assumedEncoding = $forceEncodingFrom;
+  if ($assumedEncoding == "") {
+
+
+// DeploymentCheck: conversion for given URLs
+
+// end DeploymentCheck
+
+
+  }
+  if (($assumedEncoding != "") && (strtoupper($assumedEncoding) != "NONE")) {
+    // convert text encoding to UNICODE, for example from windows WINDOWS-1252 files
+    $pgnText = html_entity_decode(htmlentities($pgnText, ENT_QUOTES, $assumedEncoding), ENT_QUOTES , "UNICODE");
   }
 
   return TRUE;
@@ -222,78 +315,136 @@ function get_pgn() {
 
 function check_tmpDir() {
 
-  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $tmpDir, $debugHelpText, $pgnDebugInfo;
-  global $fileUploadLimitText, $fileUploadLimitBytes, $krabbeStartPosition, $goToView, $mode, $zipSupported;
+  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $forceEncodingFrom, $tmpDir, $debugHelpText, $pgnDebugInfo;
+  global $fileUploadLimitIniText, $fileUploadLimitText, $fileUploadLimitBytes, $startPosition, $goToView, $zipSupported;
 
-  $tmpDirHandle = opendir($tmpDir);
-  while($entryName = readdir($tmpDirHandle)) {
-    if (($entryName !== ".") & ($entryName !== "..") & ($entryName !== "index.html")) {
-      if ((time() - filemtime($tmpDir . "/" . $entryName)) > 3600) { 
-        $unexpectedFiles = $unexpectedFiles . " " . $entryName;
+  if (preg_match("/^[a-zA-Z]+:\/\/.+/", $tmpDir)) { return; }
+
+  $unexpectedFiles = "";
+  if ($tmpDirHandle = opendir($tmpDir)) {
+    while($entryName = readdir($tmpDirHandle)) {
+      if (($entryName !== ".") && ($entryName !== "..") && ($entryName !== "index.html")) {
+        if ((time() - filemtime($tmpDir . "/" . $entryName)) > 3600) {
+          $unexpectedFiles = $unexpectedFiles . " " . $entryName;
+        }
       }
     }
+    closedir($tmpDirHandle);
+    if ($unexpectedFiles) {
+      $pgnDebugInfo = $pgnDebugInfo . "\\n" . "clean temporary directory " . $tmpDir . ":" . $unexpectedFiles;
+    }
+  } else {
+      $pgnDebugInfo = $pgnDebugInfo . "\\n" . "failed opening temporary directory " . $tmpDir;
   }
-  closedir($tmpDirHandle);
 
-  if ($unexpectedFiles) {
-    $pgnDebugInfo = $pgnDebugInfo . "clean temporary directory " . $tmpDir . "(" . $unexpectedFiles . ")<br>"; 
-  }
+}
+
+function print_menu($item) {
+
+  print <<<END
+
+<div style="height:0.2em; overflow:hidden;"><a name="$item">&nbsp;</a></div>
+<div style="width:100%; text-align:right; font-size:66%; padding-bottom:0.5em;">
+&nbsp;&nbsp;&nbsp;&nbsp;<a href="#bottom" style="color: #B0B0B0;" onclick="this.blur();">bottom</a>
+&nbsp;&nbsp;&nbsp;&nbsp;<a href="#moves" style="color: #B0B0B0;" onclick="this.blur();">moves</a>
+&nbsp;&nbsp;&nbsp;&nbsp;<a href="#board" style="color: #B0B0B0;" onclick="this.blur();">board</a>
+&nbsp;&nbsp;&nbsp;&nbsp;<a href="#top" style="color: #B0B0B0;" onclick="this.blur();">top</a>
+</div>
+
+END;
 }
 
 function print_header() {
 
-  print <<<END
+  global $headlessPage;
 
+  if (($headlessPage == "true") || ($headlessPage == "t")) {
+     $headClass = "  display:none;";
+  } else {
+     $headClass = "";
+  }
+
+  print <<<END
+<!DOCTYPE HTML>
 <html>
 
 <head>
 
-<meta http-equiv="content-type" content="text/html; charset=ISO-8859-1"> 
+<meta http-equiv="content-type" content="text/html; charset=ISO-8859-1">
 
-<title>pgn4web games viewer</title> 
+<meta name="viewport" content="width=800">
+<link rel="icon" sizes="16x16" href="pawn.ico" />
+<title>pgn4web games viewer</title>
 
 <style type="text/css">
 
+html,
 body {
-  color: black;
-  background: white; 
-  font-family: 'pgn4web Liberation Sans', sans-serif;
-  line-height: 1.3em;
-  padding: 20px;
-  $bodyFontSize
+  margin: 0px;
+  padding: 0px;
 }
 
-a:link, a:visited, a:hover, a:active { 
-  color: black; 
+body {
+  color: black;
+  background: white;
+  font-family: 'pgn4web Liberation Sans', sans-serif;
+  font-size: 16px;
+  padding: 1.75em;
+  overflow-x: hidden;
+  overflow-y: scroll;
+}
+
+div, span, table, tr, td {
+  font-family: 'pgn4web Liberation Sans', sans-serif; /* fixes IE9 body css issue */
+  font-size: 16px; /* fixes Opera table css issue */
+  line-height: 1.4em;
+}
+
+a {
+  color: black;
   text-decoration: none;
 }
 
 .formControl {
   font-size: smaller;
+  margin: 0px;
+}
+
+.verticalMiddle {
+  display: block;
+  vertical-align: middle;
+}
+
+.borderBox {
+  box-sizing: border-box;
+  -moz-box-sizing: border-box;
+  -webkit-box-sizing: border-box;
+}
+
+.textboxAppearance {
+  appearance: field;
+  -moz-appearance: textfield;
+  -webkit-appearance: textfield;
+}
+
+.headClass {
+$headClass
 }
 
 </style>
 
-
-<!-- start of google analytics code -->
-
-<!-- end of google analytics code -->
-
-
 </head>
 
-<body>
+<body onResize="if (typeof(updateAnnotationGraph) != 'undefined') { updateAnnotationGraph(); }">
 
-<table border="0" cellpadding="0" cellspacing="0" width="100%"><tbody><tr>
-<td align="left" valign="middle"> 
-<h1 name="top" style="font-family: sans-serif; color: red;"><a style="color: red;" href=.>pgn4web</a> games viewer</h1> 
-</td>
-<td align="right" valign="middle">
-<a href=.><img src=pawns.png border=0></a>
-</td>
-</tr></tbody></table>
+<h1 class="headClass" style="margin-top:0px; padding-top:0px; text-align:right;">
+<a style="float:left; color:red;">
+pgn4web games viewer
+</a>
+<a href="." onfocus="this.blur();" style="width:49px; height:29px; background:url(pawns.png) -47px -15px; vertical-align:baseline; display:inline-block;"></a>
+</h1>
 
-<div style="height: 1em;">&nbsp;</div>
+<div style="height:1em;" class="headClass">&nbsp;</div>
 
 END;
 }
@@ -301,14 +452,17 @@ END;
 
 function print_form() {
 
-  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $tmpDir, $debugHelpText, $pgnDebugInfo;
-  global $fileUploadLimitText, $fileUploadLimitBytes, $krabbeStartPosition, $goToView, $mode, $zipSupported;
+  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $forceEncodingFrom, $tmpDir, $debugHelpText, $pgnDebugInfo;
+  global $fileUploadLimitIniText, $fileUploadLimitText, $fileUploadLimitBytes, $startPosition, $goToView, $zipSupported;
+  global $headlessPage, $hideFormCss, $presetURLsArray;
 
   $thisScript = $_SERVER['SCRIPT_NAME'];
+  if (($headlessPage == "true") || ($headlessPage == "t")) { $thisScript .= "?hp=t"; }
 
   print <<<END
 
 <script type="text/javascript">
+  "use strict";
 
   function setPgnUrl(newPgnUrl) {
     if (!newPgnUrl) { newPgnUrl = ""; }
@@ -317,17 +471,17 @@ function print_form() {
   }
 
   function checkPgnUrl() {
-    theObject = document.getElementById("urlFormText");
-    if (theObject === null) { return false; }
-    if (!checkPgnExtension(theObject.value)) { return false; }
-    else { return (theObject.value !== ""); }
+    var theObj = document.getElementById("urlFormText");
+    if (!theObj) { return false; }
+    if (!checkPgnExtension(theObj.value)) { return false; }
+    else { return (theObj.value !== ""); }
   }
 
   function checkPgnFile() {
-    theObject = document.getElementById("uploadFormFile");
-    if (theObject === null) { return false; }
-    if (!checkPgnExtension(theObject.value)) { return false; }
-    else { return (theObject.value !== ""); }
+    var theObj = document.getElementById("uploadFormFile");
+    if (!theObj) { return false; }
+    if (!checkPgnExtension(theObj.value)) { return false; }
+    else { return (theObj.value !== ""); }
   }
 
 END;
@@ -335,8 +489,8 @@ END;
   if ($zipSupported) { print <<<END
 
   function checkPgnExtension(uri) {
-    if (uri.match(/\\.(zip|pgn|txt)\$/i)) {
-      return true; 
+    if (uri.replace(/[?#].*$/, "").match(/\\.(zip|pgn|txt)\$/i)) {
+      return true;
     } else if (uri !== "") {
       alert("only PGN and ZIP (zipped pgn) files are supported");
     }
@@ -349,10 +503,10 @@ END;
 
   function checkPgnExtension(uri) {
     if (uri.match(/\\.(pgn|txt)\$/i)) {
-      return true; 
+      return true;
     } else if (uri.match(/\\.zip\$/i)) {
-      alert("ZIP support unavailable from this server, only PGN files are supported");
-    } else if (uri !== "") { 
+      alert("ZIP support unavailable from this server, only PGN files are supported\\n\\nplease submit locally extracted PGN");
+    } else if (uri !== "") {
       alert("only PGN files are supported (ZIP support unavailable from this server)");
     }
     return false;
@@ -365,7 +519,7 @@ END;
   print <<<END
 
   function checkPgnFormTextSize() {
-    document.getElementById("pgnFormButton").title = "PGN textbox size is " + document.getElementById("pgnFormText").value.length;
+    document.getElementById("pgnFormButton").title = "view games from textbox: PGN textbox size is " + document.getElementById("pgnFormText").value.length;
     if (document.getElementById("pgnFormText").value.length == 1) {
       document.getElementById("pgnFormButton").title += " char;";
     } else {
@@ -375,279 +529,260 @@ END;
     document.getElementById("pgnFormText").title = document.getElementById("pgnFormButton").title;
   }
 
+
   function loadPgnFromForm() {
-    theObjectPgnFormText = document.getElementById('pgnFormText');
-    if (theObjectPgnFormText === null) { return; }
-    if (theObjectPgnFormText.value === "") { return; }
 
-    theObjectPgnText = document.getElementById('pgnText');
-    if (theObjectPgnText === null) { return; }
+    var theObjPgnFormText = document.getElementById('pgnFormText');
+    if (!theObjPgnFormText) { return; }
+    if (theObjPgnFormText.value === "") { return; }
 
-    theObjectPgnText.value = theObjectPgnFormText.value;
+    var theObjPgnText = document.getElementById('pgnText');
+    if (!theObjPgnText) { return; }
 
-    theObjectPgnText.value = theObjectPgnText.value.replace(/\\[/g,'\\n\\n[');
-    theObjectPgnText.value = theObjectPgnText.value.replace(/\\]/g,']\\n\\n');
-    theObjectPgnText.value = theObjectPgnText.value.replace(/([012\\*])(\\s*)(\\[)/g,'\$1\\n\\n\$3');
-    theObjectPgnText.value = theObjectPgnText.value.replace(/\\]\\s*\\[/g,']\\n[');
-    theObjectPgnText.value = theObjectPgnText.value.replace(/^\\s*\\[/g,'[');
-    theObjectPgnText.value = theObjectPgnText.value.replace(/\\n[\\s*\\n]+/g,'\\n\\n');
+    theObjPgnText.value = theObjPgnFormText.value;
 
-    document.getElementById('pgnStatus').innerHTML = "PGN games from textbox input";
+    theObjPgnText.value = theObjPgnText.value.replace(/\\[/g,'\\n\\n[');
+    theObjPgnText.value = theObjPgnText.value.replace(/\\]/g,']\\n\\n');
+    theObjPgnText.value = theObjPgnText.value.replace(/([012\\*])(\\s*)(\\[)/g,'\$1\\n\\n\$3');
+    theObjPgnText.value = theObjPgnText.value.replace(/\\]\\s*\\[/g,']\\n[');
+    theObjPgnText.value = theObjPgnText.value.replace(/^\\s*\\[/g,'[');
+    theObjPgnText.value = theObjPgnText.value.replace(/\\n[\\s*\\n]+/g,'\\n\\n');
+
     document.getElementById('uploadFormFile').value = "";
     document.getElementById('urlFormText').value = "";
 
+    if (analysisStarted) { stopAnalysis(); }
     firstStart = true;
     start_pgn4web();
-    if (window.location.hash == "view") { window.location.reload(); }   
-    else {window.location.hash = "view"; }  
- 
+    resetAlert();
+    myAlert("info: games from textbox input", false, true);
+
+    goToHash("board");
     return;
   }
 
   function urlFormSelectChange() {
-    theObject = document.getElementById("urlFormSelect");
-    if (theObject === null) { return; }
-  
-    switch (theObject.value) {
-      case "twic":
-        givenTwicNumber = 765;
-        epochTimeOfGivenTwic = 1246921199; // Mon July 6th, 23:59:59 GMT
-        nowDate = new Date();
-        epochTimeNow = nowDate.getTime() / 1000;
-        twicNum = givenTwicNumber + Math.floor((epochTimeNow - epochTimeOfGivenTwic) / (60 * 60 * 24 * 7));
-	setPgnUrl("http://www.chesscenter.com/twic/zips/twic" + twicNum + "g.zip");
-        theObject.value = "header";
-      break;
+    var theObj = document.getElementById("urlFormSelect");
+    if (!theObj) { return; }
 
-      case "nic":
-	givenNicYear = 2009;
-        givenNicIssue = 1;
-        epochTimeOfGivenNic = 1232585999; // Jan 21st, 23:59:59 GMT
-        nowDate = new Date();
-	epochTimeNow = nowDate.getTime() / 1000;
-        nicYear = givenNicYear + Math.floor((epochTimeNow - epochTimeOfGivenNic) / (60 * 60 * 24 * 365.25));
-        nicIssue = 1 + Math.floor((epochTimeNow - (epochTimeOfGivenNic + (nicYear - givenNicYear) * (60 * 60 * 24 * 365.25))) / (60 * 60 * 24 * 365.25 / 8));
-        setPgnUrl("http://www.newinchess.com/Magazine/GameFiles/mag_" + nicYear + "_" + nicIssue + "_pgn.zip");
-        theObject.value = "header";
-      break;
+    var targetPgnUrl = "";
+    switch (theObj.value) {
 
-      default:
-        setPgnUrl("");
-        theObject.value = "header";
-      break;
-    }
+END;
+
+  foreach($presetURLsArray as $value) {
+    print("\n" . '      case "' . $value['label'] . '":' . "\n" . '        targetPgnUrl = (function(){ ' . $value['javascriptCode'] . '})();' . "\n" . '      break;' . "\n");
   }
 
-function reset_viewer() {
-   document.getElementById("uploadFormFile").value = "";
-   document.getElementById("urlFormText").value = "";
-   document.getElementById("pgnFormText").value = "";
-   checkPgnFormTextSize();
-   document.getElementById("pgnStatus").innerHTML = "please enter chess games in PGN format&nbsp; &nbsp;<span style='color: gray;'>file and URL inputs must not exceed $fileUploadLimitText</span>";
-   document.getElementById("pgnText").value = '$krabbeStartPosition';
+  $formVariableColspan = $presetURLsArray ? 2: 1;
+  print <<<END
 
-   firstStart = true;
-   start_pgn4web();
-   if (window.location.hash == "top") { window.location.reload(); }
-   else {window.location.hash = "top"; }
+      default:
+      break;
+    }
+    setPgnUrl(targetPgnUrl);
+    theObj.value = "header";
+  }
+
+var textFormMinHeight = "";
+function getTextFormMinHeight() {
+  var theObj;
+  if ((theObj = document.getElementById("pgnFormText")) &&  (theObj.offsetHeight)) {
+    return (theObj.offsetHeight + "px");
+  } else {
+    return "5em";
+  }
 }
+
+function reset_viewer() {
+
+  document.getElementById("uploadFormFile").value = "";
+  document.getElementById("urlFormText").value = "";
+  document.getElementById("pgnFormText").value = "";
+  document.getElementById("pgnFormText").style.height = textFormMinHeight;
+  checkPgnFormTextSize();
+  document.getElementById("pgnText").value = '$startPosition';
+
+  if (typeof(start_pgn4web) == "function") {
+    if (analysisStarted) { stopAnalysis(); }
+    firstStart = true;
+    SetAutoplayNextGame(false);
+    if (IsRotated) { FlipBoard(); }
+    start_pgn4web();
+    resetAlert();
+    resetLastCommentArea();
+  }
+
+  goToHash("top");
+}
+
+// fake functions to avoid warnings before pgn4web.js is loaded
+function disableShortcutKeysAndStoreStatus() {}
+function restoreShortcutKeysStatus() {}
 
 </script>
 
-<table width="100%" cellspacing=0 cellpadding=3 border=0><tbody>
+<table style="margin-bottom:1.5em; $hideFormCss" width="100%" cellspacing="0" cellpadding="3" border="0"><tbody>
 
+  <form id="uploadForm" action="$thisScript" enctype="multipart/form-data" method="POST" style="display:inline;">
   <tr>
-    <td align="left" valign="top">
-      <form id="uploadForm" action="$thisScript" enctype="multipart/form-data" method="POST" style="display: inline;">
-        <input id="uploadFormSubmitButton" type="submit" class="formControl" value="show games from PGN (or zipped PGN) file" style="width:100%" title="PGN and ZIP files must be smaller than $fileUploadLimitText; $debugHelpText" onClick="return checkPgnFile();">
+    <td align="left" valign="middle">
+      <input id="uploadFormSubmitButton" type="submit" class="formControl" value=" view games from local file " style="width:100%;" title="view games from local file: PGN and ZIP files must be smaller than $fileUploadLimitText (form limit) and $fileUploadLimitIniText (server limit); $debugHelpText" onClick="this.blur(); return checkPgnFile();">
     </td>
-    <td colspan=2 width="100%" align="left" valign="top">
-        <input type="hidden" name="mode" value="$mode">
-        <input type="hidden" name="MAX_FILE_SIZE" value="$fileUploadLimitBytes">
-        <input id="uploadFormFile" name="pgnFile" type="file" class="formControl" style="width:100%" title="PGN and ZIP files must be smaller than $fileUploadLimitText; $debugHelpText">
-      </form>
+    <td colspan="$formVariableColspan" width="100%" align="left" valign="middle">
+      <input type="hidden" name="MAX_FILE_SIZE" value="$fileUploadLimitBytes">
+      <input id="uploadFormFile" name="pgnFile" type="file" class="formControl borderBox" style="width:100%;" title="view games from local file: PGN and ZIP files must be smaller than $fileUploadLimitText (form limit) and $fileUploadLimitIniText (server limit); $debugHelpText" onClick="this.blur();">
+      <input type="hidden" name="forceEncodingFrom" value="$forceEncodingFrom">
     </td>
   </tr>
+  </form>
 
+  <form id="urlForm" action="$thisScript" method="POST" style="display:inline;">
+  <tr>
+    <td align="left" valign="middle">
+      <input id="urlFormSubmitButton" type="submit" class="formControl" value=" view games from remote URL " title="view games from remote URL: PGN and ZIP files must be smaller than $fileUploadLimitText (form limit) and $fileUploadLimitIniText (server limit); $debugHelpText" onClick="this.blur(); return checkPgnUrl();">
+    </td>
+    <td width="100%" align="left" valign="middle">
+      <input id="urlFormText" name="pgnUrl" type="text" class="formControl verticalMiddle borderBox" value="" style="width:100%;" onFocus="disableShortcutKeysAndStoreStatus();" onBlur="restoreShortcutKeysStatus();" title="view games from remote URL: PGN and ZIP files must be smaller than $fileUploadLimitText (form limit) and $fileUploadLimitIniText (server limit); $debugHelpText">
+      <input type="hidden" name="forceEncodingFrom" value="$forceEncodingFrom">
+    </td>
+END;
+
+  if ($presetURLsArray) {
+    print('  <td align="right" valign="middle">' . "\n" . '      <select id="urlFormSelect" class="formControl verticalMiddle" style="font-family:monospace; display:block; vertical-align:middle; max-width:20ex;" title="view games from remote URL: select the download URL from the preset options; please support the sites providing the PGN games downloads" onChange="this.blur(); urlFormSelectChange();">' . "\n" . '        <option value="header"> </option>' . "\n");
+    foreach($presetURLsArray as $value) {
+      print('        <option value="' . $value['label'] . '">' . $value['label'] . '</option>' . "\n");
+    }
+    print('        <option value="clear">clear URL</option>' . "\n" . '      </select>' . "\n" . '    </td>' . "\n");
+  }
+
+  print <<<END
+  </tr>
+  </form>
+
+  <form id="textForm" style="display:inline;">
   <tr>
     <td align="left" valign="top">
-      <form id="urlForm" action="$thisScript" method="POST" style="display: inline;">
-	<input id="urlFormSubmitButton" type="submit" class="formControl" value="show games from PGN (or zipped PGN) URL" title="PGN and ZIP files must be smaller than $fileUploadLimitText; $debugHelpText" onClick="return checkPgnUrl();">
+      <input id="pgnFormButton" type="button" class="formControl" value=" view games from textbox " style="width:100%;" onClick="this.blur(); loadPgnFromForm();">
     </td>
-    <td width="100%" align="left" valign="top">
-        <input id="urlFormText" name="pgnUrl" type="text" class="formControl" value="" style="width:100%" onFocus="disableShortcutKeysAndStoreStatus();" onBlur="restoreShortcutKeysStatus();" title="PGN and ZIP files must be smaller than $fileUploadLimitText; $debugHelpText">
-        <input type="hidden" name="mode" value="$mode">
-      </form>
-    </td>
-    <td align="right" valign="top">
-        <select id="urlFormSelect" class="formControl" title="preset the URL saving the time for downloading locally and then uploading the latest PGN from The Week In Chess or New In Chess; please note the URL of the latest issue of the online chess magazines is estimated and might occasionally need manual adjustment; please show your support to the online chess magazines visiting the TWIC website http://www.chess.co.uk/twic/twic.html and the NIC website http://www.newinchess.com" onChange="urlFormSelectChange();">
-          <option value="header">preset URL</option>
-          <option value="twic">latest TWIC</option>
-          <option value="nic">latest NIC</option>
-          <option value="clear">clear URL</option>
-        </select>
+    <td colspan="$formVariableColspan" rowspan="2" width="100%" align="right" valign="middle">
+      <textarea id="pgnFormText" class="formControl verticalMiddle borderBox textboxAppearance" name="pgnTextbox" rows=4 style="width:100%; resize:vertical;" onFocus="disableShortcutKeysAndStoreStatus();" onBlur="restoreShortcutKeysStatus();" onChange="checkPgnFormTextSize();">$pgnTextbox</textarea>
     </td>
   </tr>
+  </form>
 
   <tr>
-    <td align="left" valign="top">
-      <form id="textForm" style="display: inline;">
-        <input id="pgnFormButton" type="button" class="formControl" value="show games from PGN textbox" style="width:100%;" onClick="loadPgnFromForm();">
+    <td align="left" valign="bottom">
+      <input id="clearButton" type="button" class="formControl" value=" reset viewer " onClick="this.blur(); if (confirm('reset viewer: current PGN games and inputs will be lost')) { reset_viewer(); }" title="reset viewer: current PGN games and inputs will be lost">
     </td>
-    <td colspan=2 rowspan=2 width="100%" align="right" valign="bottom">
-        <input type="hidden" name="mode" value="$mode">
-        <textarea id="pgnFormText" class="formControl" name="pgnTextbox" rows=4 style="width:100%;" onFocus="disableShortcutKeysAndStoreStatus();" onBlur="restoreShortcutKeysStatus();" onChange="checkPgnFormTextSize();">$pgnTextbox</textarea>
-      </form>
-    </td>
-  </tr>
-
-  <tr>
-  <td align="left" valign="bottom">
-    <input id="clearButton" type="button" class="formControl" value="reset PGN viewer" onClick="if (confirm('reset PGN viewer, current games and inputs will be lost')) { reset_viewer(); }" title="reset PGN viewer, current games and inputs will be lost">
-  </td>
   </tr>
 
 </tbody></table>
 
+<script type="text/javascript">
+"use strict";
+
+var textFormMinHeight = getTextFormMinHeight();
+var theObj = document.getElementById("pgnFormText");
+if (theObj) {
+  theObj.style.height = textFormMinHeight;
+  theObj.style.minHeight = textFormMinHeight;
+}
+
+</script>
+
 END;
 }
 
-function print_chessboard() {
+function print_chessboard_one() {
 
-  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $tmpDir, $debugHelpText, $pgnDebugInfo;
-  global $fileUploadLimitText, $fileUploadLimitBytes, $krabbeStartPosition, $goToView, $mode, $zipSupported;
-
-  if ($mode == "compact") {
-    $pieceSize = 30;
-    $pieceType = "alpha";
-  } else {
-    $pieceSize = 38;
-    $pieceType = "merida";
-  }
+  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $forceEncodingFrom, $tmpDir, $debugHelpText, $pgnDebugInfo;
+  global $fileUploadLimitIniText, $fileUploadLimitText, $fileUploadLimitBytes, $startPosition, $goToView, $zipSupported;
+  global $hideFormCss;
 
   print <<<END
 
-<table width=100% cellpadding=0 cellspacing=0 border=0><tr><td valign=top align=left>
-<a name="view"></a><div id="pgnStatus" style="font-weight: bold; margin-top: 3em; margin-bottom: 3em;">$pgnStatus</div>
-</td><td valign=top align=right>
-<div style="padding-top: 1em;">
-&nbsp;&nbsp;&nbsp;<a href="#moves" style="color: gray; font-size: 66%;">moves</a>&nbsp;&nbsp;&nbsp;<a href="#view" style="color: gray; font-size: 66%;">board</a>&nbsp;&nbsp;&nbsp;<a href="#top" style="color: gray; font-size: 66%;">form</a>
-</div>
-</tr></table>
-
-<link href="fonts/pgn4web-fonts.css" type="text/css" rel="stylesheet" />
 <style type="text/css">
 
-END;
+@import url("fonts/pgn4web-font-LiberationSans.css");
+@import url("fonts/pgn4web-font-ChessSansUsual.css");
 
-  if ($mode == "compact") {
-
-    print <<<END
-
-.boardTable {
-  border-style: solid;
-  border-width: 0;
+.gameBoard, .boardTable {
+  width: 392px !important;
+  height: 392px !important;
 }
-
-.pieceImage {
-  width: $pieceSize;
-  height: $pieceSize;
-}
-
-.whiteSquare,
-.blackSquare,
-.highlightWhiteSquare,
-.highlightBlackSquare {
-  width: $pieceSize;
-  height: $pieceSize;
-  border-width: 0;
-}
-
-.whiteSquare {
-  background: #ede8d5;
-}
-
-.blackSquare {
-  background: #cfcbb3;
-}
-
-.highlightWhiteSquare,
-.highlightBlackSquare {
-  background: #f5d0a9;
-}
-
-.move,
-.label,
-.normalItem,
-.boldItem {
-  font-size: 75%;
-}
-
-END;
-
-  } else {
-
-    print <<<END
 
 .boardTable {
   border-style: solid;
   border-color: #663300;
-  border-width: 3;
+  border-width: 4px;
   box-shadow: 0px 0px 20px #663300;
-  -webkit-box-shadow: 0px 0px 20px #663300;
-  -moz-box-shadow: 0px 0px 20px #663300;
 }
 
 .pieceImage {
-  width: $pieceSize;
-  height: $pieceSize;
+  width: 36px;
+  height: 36px;
 }
 
 .whiteSquare,
 .blackSquare,
 .highlightWhiteSquare,
 .highlightBlackSquare {
-  width: 42;
-  height: 42;
+  width: 44px;
+  height: 44px;
   border-style: solid;
-  border-width: 2;
+  border-width: 2px;
 }
 
 .whiteSquare,
 .highlightWhiteSquare {
-  border-color: #ffcc99;
-  background: #ffcc99;
+  border-color: #FFCC99;
+  background: #FFCC99;
 }
 
 .blackSquare,
 .highlightBlackSquare {
-  border-color: #cc9966;
-  background: #cc9966;
+  border-color: #CC9966;
+  background: #CC9966;
 }
 
 .highlightWhiteSquare,
 .highlightBlackSquare {
   border-color: #663300;
-  border-style: solid;
 }
-
-END;
-
-  }
-
-  print <<<END
 
 .selectControl {
 /* a "width" attribute here must use the !important flag to override default settings */
   width: 100% !important;
+  margin-top: 1em;
 }
 
+.optionSelectControl {
+}
+
+.gameButtons {
+  width: 392px;
+}
+
+.buttonControlPlay,
+.buttonControlStop,
 .buttonControl {
 /* a "width" attribute here must use the !important flag to override default settings */
+  width: 75.2px !important;
+  font-family: 'pgn4web ChessSansUsual', 'pgn4web Liberation Sans', sans-serif;
+  font-size: 1em;
+  color: #B0B0B0;
+  -moz-appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: transparent;
+  margin-top: 25px;
+  margin-bottom: 10px;
 }
 
 .buttonControlSpace {
 /* a "width" attribute here must use the !important flag to override default settings */
+  width: 4px !important;
 }
 
 .searchPgnButton {
@@ -661,193 +796,1382 @@ END;
 }
 
 .move,
-.moveOn {
-  color: black;
-  font-weight: normal;
-  text-decoration: none;   
-  font-family: 'pgn4web ChessSansUsual', 'pgn4web Liberation Sans', sans-serif;
-  line-height: 1.3em;
-}
-
-.moveOn {
-  background: #ffcc99;
-}
-
+.variation,
 .comment {
-  color: gray;
-  font-family: 'pgn4web Liberation Sans', sans-serif;
-  line-height: 1.3em;
+  line-height: 1.4em;
+  font-weight: normal;
 }
 
-.label {
-  color: gray;
-  padding-right: 10;
+.move,
+.variation,
+.commentMove {
+  font-family: 'pgn4web ChessSansUsual', 'pgn4web Liberation Sans', sans-serif;
+}
+
+a.move,
+a.variation,
+.commentMove {
+  white-space: nowrap;
+}
+
+.move,
+.variation {
+  text-decoration: none;
+}
+
+.move {
+  color: black;
+}
+
+.moveText {
+  clear: both;
+  text-align: justify;
+}
+
+.comment,
+.variation {
+  color: #808080;
+}
+
+a.variation {
+  color: #808080;
+}
+
+.moveOn,
+.variationOn {
+  background-color: #FFCC99;
+}
+
+.selectSearchContainer {
+  text-align: center;
+}
+
+.emMeasure {
+  height: 1em; /* required */
+  padding-top: 1em;
+}
+
+.mainContainer {
+  padding-top: 0.5em;
+  padding-bottom: 1em;
+}
+
+.columnsContainer {
+  float: left;
+  width: 100%;
+}
+
+.boardColumn {
+  float: left;
+  width: 60%;
+}
+
+.headerColumn {
+  margin-left: 60%;
+}
+
+.headerItem {
+  width: 100%;
+  height: 1.4em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.innerHeaderItem,
+.innerHeaderItemNoMargin {
+  color: black;
+  text-decoration: none;
+}
+
+.innerHeaderItem {
+  margin-right: 1.25em;
+}
+
+.innerHeaderItemNoMargin {
+  margin-right: 0px;
+}
+
+.headerSpacer {
+  height: 0.66em;
+}
+
+.gameAnnotationContainer {
+  height: 6em;
+  width: 100%;
+}
+
+.toggleComments, .toggleAnalysis {
+  white-space: nowrap;
   text-align: right;
 }
 
-.normalItem {
+.toggleCommentsLink, .toggleAnalysisLink, .backButton {
+  display: inline-block;
+  width: 1em;
+  padding-left: 1em;
+  text-decoration: none;
+  text-align: right;
+  color: #B0B0B0;
 }
 
-.boldItem {
-  font-weight: bold;
+.gameAnnotationMessage {
+  display: inline-block;
+  white-space: nowrap;
+  color: #B0B0B0;
+  margin-top: 25px;
+  margin-bottom: 10px;
 }
 
-.rowSpace {
-  height: 8px;
+.lastMoveAndVariations {
+  float: left;
+}
+
+.lastMove {
+}
+
+.lastVariations {
+  padding-left: 1em;
+}
+
+.nextMoveAndVariations {
+  float: right;
+}
+
+.nextMove {
+}
+
+.nextVariations {
+  padding-right: 1em;
+}
+
+.backButton {
+}
+
+.lastMoveAndComment {
+  clear: both;
+  line-height: 1.4em;
+  display: none;
+}
+
+.lastComment {
+  clear: both;
+  resize: vertical;
+  overflow-y: auto;
+  height: 4.2em;
+  min-height: 1.4em;
+  max-height: 21em;
+  padding-right: 1em;
+  margin-bottom: 1em;
+  text-align: justify;
+}
+
+.analysisEval {
+  display: inline-block;
+  min-width: 3em;
+}
+
+.analysisMove {
+}
+
+.tablebase {
+  display: none;
+}
+
+.analysisPv {
+  margin-left: 0.5em;
 }
 
 </style>
 
-<link rel="shortcut icon" href="pawn.ico" />
-
 <script src="pgn4web.js" type="text/javascript"></script>
-<script type="text/javascript">
-  SetImagePath("$pieceType/$pieceSize"); 
-  SetImageType("png");
-  SetHighlightOption(true); 
-  SetCommentsIntoMoveText(true);
-  SetCommentsOnSeparateLines(true);
-  SetInitialGame(1); 
-  SetInitialHalfmove(0);
-  SetGameSelectorOptions(" Event         Site          Rd  White            Black            Res  Date", true, 12, 12, 2, 15, 15, 3, 10);
-  SetAutostartAutoplay(false);
-  SetAutoplayDelay(2000);
-  SetShortcutKeysEnabled(true);
+<script src="engine.js" type="text/javascript"></script>
+<script src="fonts/chess-informant-NAG-symbols.js" type="text/javascript"></script>
+<script src="fide-lookup.js" type="text/javascript"></script>
 
-  function customFunctionOnPgnTextLoad() { 
-    document.getElementById('numGm').innerHTML = numberOfGames; 
-  }
-  function customFunctionOnPgnGameLoad() {
-    document.getElementById('currGm').innerHTML = currentGame+1;
-    document.getElementById('numPly').innerHTML = PlyNumber;
-  }
-  function customFunctionOnMove() { 
-    document.getElementById('currPly').innerHTML = CurrentPly; 
-  }
-</script>
+<style type="text/css">
+
+.NAGs {
+  font-size: 19px;
+  line-height: 0.9em;
+}
+
+</style>
 
 <!-- paste your PGN below and make sure you dont specify an external source with SetPgnUrl() -->
-<form style="display: inline"><textarea style="display:none" id="pgnText">
+<form style="display: none;"><textarea style="display: none;" id="pgnText">
 
 $pgnText
 
 </textarea></form>
 <!-- paste your PGN above and make sure you dont specify an external source with SetPgnUrl() -->
 
-<table width=100% cellspacing=0 cellpadding=5>
+<script type="text/javascript">
+   "use strict";
+
+   var pgn4web_engineWindowUrlParameters = "pf=m";
+
+   var highlightOption_default = true;
+   var commentsOnSeparateLines_default = false;
+   var commentsIntoMoveText_default = true;
+   var initialHalfmove_default = "start";
+
+   SetImagePath("images/merida/36");
+   SetImageType("png");
+   SetHighlightOption(getHighlightOptionFromLocalStorage());
+   SetCommentsIntoMoveText(getCommentsIntoMoveTextFromLocalStorage());
+   SetCommentsOnSeparateLines(getCommentsOnSeparateLinesFromLocalStorage());
+   SetInitialGame(1);
+   SetInitialVariation(0);
+   SetInitialHalfmove(initialHalfmove_default, true);
+   SetGameSelectorOptions(null, true, 12, 12, 2, 15, 15, 3, 10);
+   SetAutostartAutoplay(false);
+   SetAutoplayNextGame(false);
+   SetAutoplayDelay(getDelayFromLocalStorage());
+   SetShortcutKeysEnabled(true);
+
+   function getHighlightOptionFromLocalStorage() {
+      var ho;
+      try { ho = (localStorage.getItem("pgn4web_chess_viewer_highlightOption") != "false"); }
+      catch(e) { return highlightOption_default; }
+      return ho === null ? highlightOption_default : ho;
+   }
+   function setHighlightOptionToLocalStorage(ho) {
+      try { localStorage.setItem("pgn4web_chess_viewer_highlightOption", ho ? "true" : "false"); }
+      catch(e) { return false; }
+      return true;
+   }
+
+   function getCommentsIntoMoveTextFromLocalStorage() {
+      var cimt;
+      try { cimt = !(localStorage.getItem("pgn4web_chess_viewer_commentsIntoMoveText") == "false"); }
+      catch(e) { return commentsIntoMoveText_default; }
+      return cimt === null ? commentsIntoMoveText_default : cimt;
+   }
+   function setCommentsIntoMoveTextToLocalStorage(cimt) {
+      try { localStorage.setItem("pgn4web_chess_viewer_commentsIntoMoveText", cimt ? "true" : "false"); }
+      catch(e) { return false; }
+      return true;
+   }
+
+   function getCommentsOnSeparateLinesFromLocalStorage() {
+      var cosl;
+      try { cosl = (localStorage.getItem("pgn4web_chess_viewer_commentsOnSeparateLines") == "true"); }
+      catch(e) { return commentsOnSeparateLines_default; }
+      return cosl === null ? commentsOnSeparateLines_default : cosl;
+   }
+   function setCommentsOnSeparateLinesToLocalStorage(cosl) {
+      try { localStorage.setItem("pgn4web_chess_viewer_commentsOnSeparateLines", cosl ? "true" : "false"); }
+      catch(e) { return false; }
+      return true;
+   }
+   var Delay_default = 2000;
+   function getDelayFromLocalStorage() {
+      var d;
+      try { d = parseInt(localStorage.getItem("pgn4web_chess_viewer_Delay"), 10); }
+      catch(e) { return Delay_default; }
+      return ((d === null) || (isNaN(d))) ? Delay_default : d;
+   }
+   function setDelayToLocalStorage(d) {
+      try { localStorage.setItem("pgn4web_chess_viewer_Delay", d); }
+      catch(e) { return false; }
+      return true;
+   }
+
+   function searchTag(tag, key, event) {
+      searchPgnGame('\\\\[\\\\s*' + tag + '\\\\s*"' + fixRegExp(key) + '"\\\\s*\\\\]', event.shiftKey);
+   }
+   function searchTagDifferent(tag, key, event) {
+      searchPgnGame('\\\\[\\\\s*' + tag + '\\\\s*"(?!' + fixRegExp(key) + '"\\\\s*\\\\])', event.shiftKey);
+   }
+
+   function fixHeaderTag(elementId) {
+      var headerId = ["GameEvent", "GameSite", "GameDate", "GameRound", "GameWhite", "GameBlack", "GameResult", "GameMode", "GameSection", "GameStage", "GameBoardNum", "Timecontrol", "GameWhiteTeam", "GameBlackTeam", "GameWhiteTitle", "GameBlackTitle", "GameWhiteElo", "GameBlackElo", "GameECO", "GameOpening", "GameVariation", "GameSubVariation", "GameTermination", "GameAnnotator", "GameWhiteClock", "GameBlackClock", "GameTimeControl"];
+      var headerLabel = ["event", "site", "date", "round", "white player", "black player", "result", "mode", "section", "stage", "board", "time control", "white team", "black team", "white title", "black title", "white elo", "black elo", "eco", "opening", "variation", "subvariation", "termination", "annotator", "white clock", "black clock", "time control"];
+      var theObj = document.getElementById(elementId);
+      if (theObj) {
+        theObj.className = (theObj.innerHTML === "") ? "innerHeaderItemNoMargin" : "innerHeaderItem";
+        for (var ii = 0; ii < headerId.length; ii++) {
+            if (headerId[ii] === elementId) { break; }
+        }
+        theObj.title = simpleHtmlentitiesDecode((ii < headerId.length ? headerLabel[ii] : elementId) + ": " + theObj.innerHTML);
+      }
+   }
+
+   function customPgnHeaderTagWithFix(tag, elementId, fixForDisplay) {
+      var theObj;
+      customPgnHeaderTag(tag, elementId);
+      fixHeaderTag(elementId);
+      if (fixForDisplay && (theObj = document.getElementById(elementId)) && theObj.innerHTML) {
+         theObj.innerHTML = fixCommentForDisplay(theObj.innerHTML);
+      }
+   }
+
+   var previousCurrentVar = -1;
+   function customFunctionOnMove() {
+
+      if (analysisStarted) {
+         if (engineUnderstandsGame(currentGame)) {
+            if (previousCurrentVar !== CurrentVar) { scanGameForFen(); }
+            restartAnalysis();
+         }
+         else { stopAnalysis(); }
+      } else {
+         clearAnalysisHeader();
+         clearAnnotationGraph();
+      }
+      previousCurrentVar = CurrentVar;
+
+      fixHeaderTag('GameWhiteClock');
+      fixHeaderTag('GameBlackClock');
+
+      if ((annotateInProgress) && (!analysisStarted)) { stopAnnotateGame(false); }
+      else if (theObj = document.getElementById("GameAnnotationMessage")) {
+         if ((!annotateInProgress) && (theObj.innerHTML.indexOf("completed") > -1)) {
+            theObj.style.display = "none";
+            theObj.innerHTML = "";
+            theObj.title = "";
+            if (theObj = document.getElementById("GameButtons")) {
+               theObj.style.display = "";
+            }
+         }
+      }
+   }
+
+   var PlyNumberMax;
+   function customFunctionOnPgnGameLoad() {
+      var theObj;
+      fixHeaderTag('GameDate');
+      customPgnHeaderTagWithFix('Mode', 'GameMode');
+      fixHeaderTag('GameSite');
+      fixHeaderTag('GameEvent');
+      customPgnHeaderTagWithFix('Section', 'GameSection');
+      customPgnHeaderTagWithFix('Stage', 'GameStage');
+      fixHeaderTag('GameRound');
+      if (theObj = document.getElementById("GameRound")) {
+         if (theObj.innerHTML) {
+            theObj.innerHTML = "round " + theObj.innerHTML;
+         }
+      }
+      customPgnHeaderTagWithFix('Board', 'GameBoardNum');
+      if (theObj = document.getElementById("GameBoardNum")) {
+         if (theObj.innerHTML) {
+            theObj.innerHTML = "board " + theObj.innerHTML;
+         }
+      }
+      customPgnHeaderTagWithFix('TimeControl', 'GameTimeControl');
+      fixHeaderTag('GameWhite');
+      fixHeaderTag('GameBlack');
+      customPgnHeaderTagWithFix('WhiteTeam', 'GameWhiteTeam');
+      customPgnHeaderTagWithFix('BlackTeam', 'GameBlackTeam');
+      customPgnHeaderTagWithFix('WhiteTitle', 'GameWhiteTitle');
+      customPgnHeaderTagWithFix('BlackTitle', 'GameBlackTitle');
+      customPgnHeaderTagWithFix('WhiteElo', 'GameWhiteElo');
+      customPgnHeaderTagWithFix('BlackElo', 'GameBlackElo');
+      customPgnHeaderTagWithFix('ECO', 'GameECO');
+      customPgnHeaderTagWithFix('Opening', 'GameOpening', true);
+      customPgnHeaderTagWithFix('Variation', 'GameVariation', true);
+      customPgnHeaderTagWithFix('SubVariation', 'GameSubVariation', true);
+      fixHeaderTag('GameResult');
+      customPgnHeaderTagWithFix('Termination', 'GameTermination');
+      customPgnHeaderTagWithFix('Annotator', 'GameAnnotator');
+      if (PlyNumber > 0) { customPgnHeaderTag('Result', 'ResultAtGametextEnd'); }
+      else { if (theObj = document.getElementById('ResultAtGametextEnd')) { theObj.innerHTML = ""; } }
+
+      if (theObj = document.getElementById("GameNumCurrent")) {
+         theObj.innerHTML = currentGame + 1;
+         theObj.title = "current game: " + (currentGame + 1);
+      }
+
+      if (theObj = document.getElementById('lastMoveAndComment')) {
+         var lastDisplayStyle;
+         if ((PlyNumber === 0) && (gameFEN[currentGame])) {
+            lastDisplayStyle = "block";
+         } else if (commentsIntoMoveText && ((PlyNumber > 0) || (gameFEN[currentGame]))) {
+            lastDisplayStyle = GameHasComments ? "block" : "none";
+         } else {
+            lastDisplayStyle = "none";
+         }
+         theObj.style.display = lastDisplayStyle;
+      }
+      if (theObj = document.getElementById("toggleCommentsLink")) {
+         if (GameHasComments) {
+            theObj.innerHTML = commentsIntoMoveText ? "&times;" : "+";
+         } else {
+            theObj.innerHTML = "";
+         }
+      }
+
+      PlyNumberMax = 0;
+      for (ii = 0; ii < numberOfVars; ii++) {
+         PlyNumberMax = Math.max(PlyNumberMax, StartPlyVar[ii] + PlyNumberVar[ii] - StartPly);
+      }
+
+      if (analysisStarted) {
+         if (engineUnderstandsGame(currentGame)) { scanGameForFen(); }
+         else { stopAnalysis(); }
+      }
+      if (theObj = document.getElementById("toggleAnalysisLink")) {
+         theObj.style.visibility = (annotationSupported && engineUnderstandsGame(currentGame)) ? "visible" : "hidden";
+      }
+      if (theObj = document.getElementById("GameAnalysisEval")) {
+         theObj.style.visibility = (annotationSupported && engineUnderstandsGame(currentGame)) ? "visible" : "hidden";
+      }
+
+      stopAnnotateGame(false);
+   }
+
+   function customFunctionOnPgnTextLoad() {
+      var theObj;
+      var gameLoadStatus = "$pgnStatus";
+      if (gameLoadStatus) {  myAlert(gameLoadStatus, gameLoadStatus.match(/^error:/), !gameLoadStatus.match(/^error:/)); }
+      if (theObj = document.getElementById("GameNumInfo")) {
+         theObj.style.display = numberOfGames > 1 ? "block" : "none";
+      }
+      if (theObj = document.getElementById("GameNumTotal")) {
+         theObj.innerHTML = numberOfGames;
+         theObj.title = "number of games: " + numberOfGames;
+      }
+   }
+
+   function searchPlayer(name, FideId, event) {
+      if (name) {
+         if (event.shiftKey) {
+            if (typeof(openFidePlayerUrl) == "function") { openFidePlayerUrl(name, FideId); }
+         } else {
+            searchPgnGame('\\\\[\\\\s*(White|Black)\\\\s*"' + fixRegExp(name) + '"\\\\s*\\\\]', false);
+         }
+      }
+   }
+
+   function searchTeam(name) {
+      searchPgnGame('\\\\[\\\\s*(White|Black)Team\\\\s*"' + fixRegExp(name) + '"\\\\s*\\\\]', false);
+   }
+
+   function cycleHash() {
+      switch (location.hash) {
+         case "#top": goToHash("board"); break;
+         case "#board": goToHash("moves"); break;
+         case "#zoom": goToHash("moves"); break;
+         case "#moves": goToHash("bottom"); break;
+         case "#bottom": goToHash("top"); break;
+         default: goToHash("board"); break;
+      }
+   }
+
+   function goToHash(hash) {
+      if (hash) { location.hash = ""; }
+      else { location.hash = "#board"; }
+      location.hash = "#" + hash;
+   }
+
+   var shortcutKeyTimeout = null;
+
+   // customShortcutKey_Shift_1 defined by fide-lookup.js
+   // customShortcutKey_Shift_2 defined by fide-lookup.js
+
+   function customShortcutKey_Shift_3() { if (shortcutKeyTimeout) { SetInitialHalfmove(initialHalfmove_default, true); } else { shortcutKeyTimeout = setTimeout("shortcutKeyTimeout = null;", 333); SetInitialHalfmove(initialHalfmove == "end" ? "start" : "end", true); } }
+
+   function customShortcutKey_Shift_4() { if (shortcutKeyTimeout) { goToHash("zoom"); } else { shortcutKeyTimeout = setTimeout("shortcutKeyTimeout = null;", 333); cycleHash(); } }
+
+   function customShortcutKey_Shift_5() { cycleLastCommentArea(); }
+
+   function customShortcutKey_Shift_6() { if (annotationSupported) { userToggleAnalysis(); } }
+   function customShortcutKey_Shift_7() { if (annotationSupported) { goToMissingAnalysis(true); } }
+
+   // customShortcutKey_Shift_8 defined by engine.js
+   // customShortcutKey_Shift_9 defined by engine.js
+   // customShortcutKey_Shift_0 defined by engine.js
+
+
+   function gameIsNormalChess(gameNum) {
+      return ((typeof(gameVariant[gameNum]) == "undefined") || (gameVariant[gameNum].match(/^(chess|normal|standard|)$/i) !== null));
+   }
+
+
+   function emPixels(em) { return em * document.getElementById("emMeasure").offsetHeight; }
+
+   var cycleLCA = 0;
+   function cycleLastCommentArea() {
+      var theObj = document.getElementById("GameLastComment");
+      if (theObj) {
+         switch (cycleLCA++ % 3) {
+            case 0:
+               if (theObj.scrollHeight === theObj.clientHeight) { cycleLastCommentArea(); }
+               else { fitLastCommentArea(); }
+               break;
+            case 1:
+               if (theObj.offsetHeight == emPixels(21)) { cycleLastCommentArea(); }
+               else { maximizeLastCommentArea(); }
+               break;
+            case 2:
+               if (theObj.offsetHeight == emPixels(4.2)) { cycleLastCommentArea(); }
+               else { resetLastCommentArea(); }
+               break;
+            default:
+               break;
+         }
+      }
+   }
+
+   function resetLastCommentArea() {
+      var theObj = document.getElementById("GameLastComment");
+      if (theObj) { theObj.style.height = ""; }
+   }
+
+   function fitLastCommentArea() {
+      var theObj = document.getElementById("GameLastComment");
+      if (theObj) {
+         theObj.style.height = "";
+         theObj.style.height = theObj.scrollHeight + "px";
+      }
+   }
+
+   function maximizeLastCommentArea() {
+      var theObj = document.getElementById("GameLastComment");
+      if (theObj) { theObj.style.height = "21em"; }
+   }
+
+   function clickedGameAnalysisEval() {
+      displayHelp('informant_symbols');
+   }
+
+</script>
+
+<div class="selectSearchContainer">
+<table border="0" cellpadding="0" cellspacing="0" width="100%"><tbody><tr>
+<td colspan="2" align="left" valign="bottom">
+<div id="GameSelector" class="gameSelector"></div>
+</td>
+</tr><tr>
+<td width="100%" align="left" valign="top">
+<div id="GameSearch" style="white-space:nowrap;"></div>
+</td><td align="right" valign="bottom">
+<div id="GameNumInfo" style="width:15ex; margin-right:0.5ex; display:none; color: #808080; font-size: 66%;"><span id="GameNumCurrent" style="font-size: 100%;" title="current game"></span>&nbsp;/&nbsp;<span id="GameNumTotal" style="font-size: 100%;" title="number of games"></span></div>
+</td>
+</tr></tbody></table>
+<div id="emMeasure" class="emMeasure"><a href="#zoom" onclick="this.blur();" id="zoom" class="NAGs" style="width:392px; font-size:14px; display:inline-block;">&nbsp;</a></div>
+<div><a name="zoom">&nbsp;</a></div>
+</div>
+
+<div class="mainContainer">
+
+<div class="columnsContainer">
+
+<div class="boardColumn">
+<center>
+<div id="GameBoard" class="gameBoard"></div>
+<div id="GameButtons" class="gameButtons"></div>
+<a href="javascript:void(0);" onclick="stopAnnotateGame(false); this.blur();" class="gameAnnotationMessage" style="display:none;" id="GameAnnotationMessage"></a>
+</center>
+</div>
+
+<div class="headerColumn">
+<div class="headerItem"><a class="innerHeaderItem" id="GameDate" href="javascript:void(0);" onclick="searchTagDifferent('Date', this.innerHTML, event); this.blur();"></a><span class="innerHeaderItem" id="GameMode"></span><b>&nbsp;</b></div>
+<div class="headerItem"><a class="innerHeaderItem" id="GameSite" href="javascript:void(0);" onclick="searchTagDifferent('Site', this.innerHTML, event); this.blur();"></a><b>&nbsp;</b></div>
+<div class="headerItem headerSpacer"><b>&nbsp;</b></div>
+<div class="headerItem"><a class="innerHeaderItem" id="GameEvent" href="javascript:void(0);" onclick="searchTagDifferent('Event', this.innerHTML, event); this.blur();"></a><a class="innerHeaderItem" id="GameSection" href="javascript:void(0);" onclick="searchTagDifferent('Section', this.innerHTML, event); this.blur();"></a><a class="innerHeaderItem" id="GameStage" href="javascript:void(0);" onclick="searchTagDifferent('Stage', this.innerHTML, event); this.blur();"></a><b>&nbsp;</b></div>
+<div class="headerItem"><a class="innerHeaderItem" id="GameRound" href="javascript:void(0);" onclick="searchTagDifferent('Round', this.innerHTML.replace('round ', ''), event); this.blur();"></a><a class="innerHeaderItem" id="GameBoardNum" href="javascript:void(0);" onclick="searchTagDifferent('Board', this.innerHTML, event); this.blur();"></a><a class="innerHeaderItem" id="GameTimeControl"  href="javascript:void(0);" onclick="searchTagDifferent('TimeControl', this.innerHTML, event); this.blur();"></a><b>&nbsp;</b></div>
+<div class="headerItem headerSpacer"><b>&nbsp;</b></div>
+<div class="headerItem"><a class="innerHeaderItem" id="GameECO" href="javascript:void(0);" onclick="searchTag('ECO', this.innerHTML, event); this.blur();"></a><a class="innerHeaderItem" id="GameOpening" href="javascript:void(0);" onclick="searchTag('Opening', customPgnHeaderTag('Opening'), event); this.blur();"></a><a class="innerHeaderItem" id="GameVariation" href="javascript:void(0);" onclick="searchTag('Variation', customPgnHeaderTag('Variation'), event); this.blur();"></a><a class="innerHeaderItem" id="GameSubVariation" href="javascript:void(0);" onclick="searchTag('SubVariation', customPgnHeaderTag('SubVariation'), event); this.blur();"></a><b>&nbsp;</b></div>
+<div class="headerItem headerSpacer"><b>&nbsp;</b></div>
+<div class="headerItem"><span class="innerHeaderItem" id="GameWhiteClock"></span><b>&nbsp;</b></div>
+<div class="headerItem"><b><a href="javascript:void(0);" onclick="searchPlayer(this.innerHTML, customPgnHeaderTag('WhiteFideId'), event); this.blur();" class="innerHeaderItem" id="GameWhite"></a></b><span class="innerHeaderItem" id="GameWhiteTitle"></span><span class="innerHeaderItem" id="GameWhiteElo"></span><a class="innerHeaderItem" id="GameWhiteTeam" href="javascript:void(0);" onclick="searchTeam(this.innerHTML); this.blur();"></a><b>&nbsp;</b></div>
+<div class="headerItem"><b><a href="javascript:void(0);" onclick="searchPlayer(this.innerHTML, customPgnHeaderTag('BlackFideId'), event); this.blur();" class="innerHeaderItem" id="GameBlack"></a></b><span class="innerHeaderItem" id="GameBlackTitle"></span><span class="innerHeaderItem" id="GameBlackElo"></span><a class="innerHeaderItem" id="GameBlackTeam" href="javascript:void(0);" onclick="searchTeam(this.innerHTML); this.blur();"></a><b>&nbsp;</b></div>
+<div class="headerItem"><span class="innerHeaderItem" id="GameBlackClock"></span><b>&nbsp;</b></div>
+<div class="headerItem headerSpacer"><b>&nbsp;</b></div>
+<div class="headerItem"><b><a href="javascript:void(0);" onclick="SetInitialHalfmove(event.shiftKey ? initialHalfmove_default : (initialHalfmove == 'end' ? 'start' : 'end'), true); GoToMove(initialHalfmove == 'end' ? StartPlyVar[0] + PlyNumberVar[0] : StartPlyVar[0], 0); this.blur();" class="innerHeaderItem" id="GameResult"></a></b><span class="innerHeaderItem" id="GameTermination"></span><span class="innerHeaderItem" id="GameAnnotator"></span><b>&nbsp;</b></div>
+<div class="headerItem headerSpacer"><b>&nbsp;</b></div>
+<div class="headerItem headerSpacer"><b>&nbsp;</b></div>
+<div class="headerItem headerSpacer"><b>&nbsp;</b></div>
+<div class="headerItem"><a href="javascript:void(0);" onclick="if (event.shiftKey) { clickedGameAnalysisEval(); } else { userToggleAnalysis(); } this.blur(); return false;" class="innerHeaderItem analysisEval" id="GameAnalysisEval" title="start annotation">&middot;&nbsp;</a><a href="javascript:void(0);" onclick="if (event.shiftKey) { MoveBackward(1); } else { goToMissingAnalysis(false); } this.blur();" class="innerHeaderItem move analysisMove notranslate" id="GameAnalysisMove" title="annotated move"></a><a href="javascript:void(0);" onclick="clickedGameTablebase();" class="innerHeaderItem tablebase" id="GameTablebase" title="probe endgame tablebase">&nbsp;</a><a href="javascript:void(0);" onclick="if (event.shiftKey) { MoveForward(1); } else { goToMissingAnalysis(true); } this.blur();" class="innerHeaderItemNoMargin move analysisPv notranslate" id="GameAnalysisPv"></a><b>&nbsp;</b></div>
+<div class="headerItem headerSpacer"><b>&nbsp;</b></div>
+<div class="gameAnnotationContainer" id="GameAnnotationContainer">
+<canvas class="gameAnnotationGraph" id="GameAnnotationGraph" height="1" width="1" onclick="annotationGraphClick(event); this.blur();" onmousemove="annotationGraphMousemove(event);" onmouseover="annotationGraphMouseover(event);" onmouseout="annotationGraphMouseout(event);"></canvas>
+</div>
+<div class="headerItem headerSpacer"><b>&nbsp;</b></div>
+<div class="toggleAnalysis" id="toggleAnalysis">&nbsp;<a class="toggleAnalysisLink" style="visibility:hidden;" id="toggleAnalysisLink" href="javascript:void(0);" onclick="if (event.shiftKey) { annotateGame(false); } else { userToggleAnalysis(); } this.blur();" title="toggle annotation">+</a></div>
+<div class="toggleComments" id="toggleComments">&nbsp;<a class="toggleCommentsLink" id="toggleCommentsLink" href="javascript:void(0);" onClick="if (event.shiftKey && commentsIntoMoveText) { cycleLastCommentArea(); } else { SetCommentsIntoMoveText(!commentsIntoMoveText); var oldPly = CurrentPly; var oldVar = CurrentVar; Init(); GoToMove(oldPly, oldVar); } this.blur();" title="toggle show comments in game text"></a></div>
+</div>
+
+</div>
+
+<div class="lastMoveAndComment" id="lastMoveAndComment">
+<div class="lastMoveAndVariations">
+<span class="lastMove" id="GameLastMove" title="last move"></span>
+<span class="lastVariations" id="GameLastVariations" title="last move alternatives"></span>&nbsp;
+</div>
+<div class="nextMoveAndVariations">
+<span class="nextVariations" id="GameNextVariations" title="next move alternatives"></span>&nbsp;
+<span class="nextMove" id="GameNextMove" title="next move"></span><a class="backButton" href="javascript:void(0);" onclick="backButton(event); this.blur();" title="move backward">&lt;</a>
+</div>
+<div>&nbsp;</div>
+<div class="lastComment" title="current position comment" id="GameLastComment"></div>
+</div>
+</div>
 
 END;
+}
 
-  if ($mode != "compact") print <<<END
+function print_chessboard_two() {
 
-  <tr valign=bottom>
-    <td align="center" colspan=2>
-
-      <div id="GameSelector"></div>
-
-      <div id="GameSearch"></div>
-
-      <div style="padding-top: 1em;">&nbsp;</div>
-
-    </td>
-  </tr>
-
-END;
+  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $forceEncodingFrom, $tmpDir, $debugHelpText, $pgnDebugInfo;
+  global $fileUploadLimitIniText, $fileUploadLimitText, $fileUploadLimitBytes, $startPosition, $goToView, $zipSupported;
 
   print <<<END
 
-  <tr valign=top>
-    <td valign=top align=center width=50%>
-      <span id="GameBoard"></span> 
-      <p></p>
-      <div id="GameButtons"></div> 
-    </td>
-    <td valign=top align=left width=50%>
+<div class="mainContainer">
+<div id="moveText" class="moveText"><span id="GameText"></span> <span class="move" style="white-space:nowrap;" id="ResultAtGametextEnd"></span></div>
+</div>
 
-      <table>
-      <tr><td class="label">date</td><td class="normalItem"><span id="GameDate"></span></td></tr>
-      <tr><td class="label">site</td><td class="normalItem"><span style="white-space: nowrap;" id="GameSite"></span></td></tr>
-      <tr><td colspan=2 class="rowSpace"></td></tr>
-      <tr><td class="label">event</td><td class="normalItem"><span style="white-space: nowrap;" id="GameEvent"></span></td></tr> 
-      <tr><td class="label">round</td><td class="normalItem"><span id="GameRound"></span></td></tr> 
-      <tr><td colspan=2 class="rowSpace"></td></tr>
-      <tr><td class="label">white</td><td class="boldItem"><span style="white-space: nowrap;" id="GameWhite"></span></td></tr>
-      <tr><td class="label">black</td><td class="boldItem"><span style="white-space: nowrap;" id="GameBlack"></span></td></tr>
-      <tr><td colspan=2 class="rowSpace"></td></tr>
-      <tr><td class="label">result</td><td><span class="boldItem" id="GameResult"></span></td></tr>
-      <tr><td colspan=2 class="rowSpace"></td></tr>
-      <tr><td class="label">side</td><td class="normalItem"><span id="GameSideToMove"></span></td></tr>
-      <tr><td class="label">last</td><td><span class="move"><span id="GameLastMove"></span></span></td></tr>
-      <tr><td class="label">next</td><td><span class="move"><span id="GameNextMove"></span></span></td></tr>
-      <tr><td colspan=2 class="rowSpace"></td></tr>
-      <tr><td class="label">ply</td><td class="normalItem"><span id=currPly>0</span> (<span id=numPly>0</span>)</td></tr>
-      <tr><td class="label">game</td><td class="normalItem"><span id=currGm>0</span> (<span id=numGm>0</span>)</td></tr>
-      <!--
-      <tr><td colspan=2 class="rowSpace"></td></tr>
-      <tr><td  class="label">comment</td><td><span class="nromalItem" id="GameLastComment"></span></td></tr>
-      -->
-      </table>
 
-    </td>
-  </tr>
-</table>
+<script type="text/javascript">
+   "use strict";
 
-<table width=100% cellpadding=0 cellspacing=0 border=0><tr><td valign=bottom align=right>
-&nbsp;&nbsp;&nbsp;<a name="moves" href="#moves" style="color: gray; font-size: 66%;">moves</a>&nbsp;&nbsp;&nbsp;<a href="#view" style="color: gray; font-size: 66%;">board</a>&nbsp;&nbsp;&nbsp;<a href="#top" style="color: gray; font-size: 66%;">form</a>
-</tr></table>
+   var theObj;
 
-END;
- 
-  if ($mode != "compact") print <<<END
+   var maxMenInTablebase = 0;
+   var minMenInTablebase = 3;
+   function probeTablebase() {}
 
-<table width=100% cellspacing=0 cellpadding=5>
-  <tr>
-    <td colspan=2>
-      <div style="padding-top: 2em; padding-bottom: 1em; text-align: justify;" id="GameText"></div>
-    </td>
-  </tr>
-</table>
+
+// DeploymentCheck: tablebase glue code
+
+// end DeploymentCheck
+
+
+   function clickedGameTablebase() {
+      var menPosition = CurrentFEN().replace(/\s.*$/, "").replace(/[0-9\/]/g, "").length;
+      if ((menPosition >= minMenInTablebase) && (menPosition <= maxMenInTablebase)) {
+         probeTablebase();
+      } else {
+         myAlert("warning: endgame tablebase only supports positions with " + minMenInTablebase + " to " + maxMenInTablebase + " men");
+      }
+   }
+   theObj = document.getElementById("GameTablebase");
+   if (theObj) { theObj.innerHTML = translateNAGs("$148"); }
+
+   function updateTablebaseFlag(thisFen) {
+      if (typeof(thisFen) == "undefined") { thisFen = CurrentFEN(); }
+      var menPosition = thisFen.replace(/\s.*$/, "").replace(/[0-9\/]/g, "").length;
+      var theObj = document.getElementById("GameTablebase");
+      if (theObj) {
+         theObj.style.display = (menPosition >= minMenInTablebase) && (menPosition <= maxMenInTablebase) && (!g_initErrors) && (analysisStarted) ? "inline" : "none";
+      }
+   }
+
+   var annotationSupported = !!window.Worker;
+   try {
+      document.getElementById("GameAnnotationGraph").getContext("2d");
+   } catch(e) { annotationSupported = false; }
+
+   var analysisStarted = false;
+   function toggleAnalysis() {
+      if (analysisStarted) { stopAnalysis(); }
+      else { restartAnalysis(); }
+   }
+
+   function restartAnalysis() {
+      analysisStarted = StartEngineAnalysis();
+      if (theObj = document.getElementById("toggleAnalysisLink")) { theObj.innerHTML = "&times;"; }
+      updateAnnotationGraph();
+      updateAnalysisHeader();
+   }
+
+   function stopAnalysis() {
+      stopAnnotateGame(false);
+      StopBackgroundEngine();
+      analysisStarted = false;
+      var theObj = document.getElementById("toggleAnalysisLink");
+      if (theObj) { theObj.innerHTML = "+"; }
+      clearAnnotationGraph();
+      clearAnalysisHeader();
+      save_cache_to_localStorage();
+   }
+
+   var fenPositions;
+   var fenPositionsEval;
+   var fenPositionsPv;
+   var fenPositionsDepth;
+   resetFenPositions();
+
+   function resetFenPositions() {
+      fenPositions = new Array();
+      fenPositionsEval = new Array();
+      fenPositionsPv = new Array();
+      fenPositionsDepth = new Array();
+   }
+
+   var annotationBarWidth;
+   function updateAnnotationGraph() {
+      if (!annotationSupported) { return; }
+      var index, theObj;
+      if (!analysisStarted) { clearAnnotationGraph(); }
+      else if (theObj = document.getElementById("GameAnnotationGraph")) {
+
+         var canvasWidth = graphCanvasWidth();
+         theObj.width = canvasWidth;
+         var canvasHeight = graphCanvasHeight();
+         theObj.height = canvasHeight;
+
+         var annotationPlyBlock = 40;
+         annotationBarWidth = canvasWidth / (Math.max(Math.ceil(PlyNumberMax / annotationPlyBlock) * annotationPlyBlock, 2 * annotationPlyBlock) + 2);
+         var barOverlap = Math.ceil(annotationBarWidth / 20);
+         var lineHeight = Math.ceil(canvasHeight / 100);
+         var lineTop = Math.floor((canvasHeight - lineHeight) / 2);
+         var lineBottom = lineTop + lineHeight;
+         var maxBarHeight = lineTop + barOverlap;
+
+         var context = theObj.getContext("2d");
+         context.beginPath();
+         var thisBarTopLeftX = 0;
+         var thisBarHeight = lineHeight;
+         var thisBarTopLeftY = lineTop;
+         context.rect(thisBarTopLeftX, thisBarTopLeftY, (PlyNumber + 1) * annotationBarWidth + barOverlap, thisBarHeight);
+         context.fillStyle = "#D9D9D9";
+         context.fill();
+         context.fillStyle = "#666666";
+         var highlightTopLeftX = null;
+         var highlightTopLeftY = null;
+         var highlightBarHeight = null;
+         for (var annPly = StartPly; annPly <= StartPly + PlyNumber; annPly++) {
+            var annGraphEval = typeof(fenPositionsEval[annPly]) != "undefined" ? fenPositionsEval[annPly] : (annPly === CurrentPly ? 0 : null);
+            if (annGraphEval !== null) {
+               thisBarTopLeftX = (annPly - StartPly) * annotationBarWidth;
+               if (annGraphEval >= 0) {
+                  thisBarHeight = Math.max((1 - Math.pow(2, -annGraphEval)) * maxBarHeight, lineHeight);
+                  thisBarTopLeftY = lineBottom - thisBarHeight;
+               } else {
+                  thisBarHeight = Math.max((1 - Math.pow(2,  annGraphEval)) * maxBarHeight, lineHeight);
+                  thisBarTopLeftY = lineTop;
+               }
+               if (annPly !== CurrentPly) {
+                  context.beginPath();
+                  context.rect(thisBarTopLeftX, thisBarTopLeftY, annotationBarWidth + barOverlap, thisBarHeight);
+                  context.fill();
+               } else {
+                  highlightTopLeftX = thisBarTopLeftX;
+                  highlightTopLeftY = thisBarTopLeftY;
+                  highlightBarHeight = thisBarHeight;
+               }
+            }
+         }
+         if (highlightBarHeight !== null) {
+            context.beginPath();
+            context.rect(highlightTopLeftX, highlightTopLeftY, annotationBarWidth + barOverlap, highlightBarHeight);
+            context.fillStyle = "#FF6633";
+            context.fill();
+         }
+      }
+   }
+
+   function clearAnnotationGraph() {
+      if (!annotationSupported) { return; }
+      var theObj = document.getElementById("GameAnnotationGraph");
+      if (theObj) {
+         var context = theObj.getContext("2d");
+         theObj.width = graphCanvasWidth();
+         theObj.height = graphCanvasHeight();
+         context.clearRect(0, 0, theObj.width, theObj.height);
+      }
+   }
+
+   function graphCanvasWidth() {
+      var theObj = document.getElementById("GameAnnotationContainer");
+      if (theObj) { return theObj.offsetWidth; }
+      else { return 320; }
+   }
+   function graphCanvasHeight() {
+      var theObj = document.getElementById("GameAnnotationContainer");
+      if (theObj) { return theObj.offsetHeight; }
+      else { return 96; }
+   }
+
+   function updateAnalysisHeader() {
+      if (!analysisStarted) { clearAnalysisHeader(); return; }
+
+      var theObj;
+      var annPly = (lastMousemoveAnnPly == -1) ? CurrentPly : lastMousemoveAnnPly;
+      var annMove = "&middot;&nbsp;";
+      if (theObj = document.getElementById("GameAnalysisMove")) {
+         if ((annPly > StartPly) && (annPly <= StartPly + PlyNumber)) {
+            annMove = (Math.floor(annPly / 2) + (annPly % 2)) + (annPly % 2 ? ". " : "... ") + Moves[annPly - 1];
+            if (isBlunder(annPly, blunderThreshold)) { annMove += translateNAGs("$4"); }
+            else if (isBlunder(annPly, mistakeThreshold)) { annMove += translateNAGs("$2"); }
+            annMove += "&nbsp;";
+         }
+         theObj.innerHTML = annMove;
+      }
+
+      var annEval = fenPositionsEval[annPly];
+      var annPv = fenPositionsPv[annPly];
+      var annDepth = fenPositionsDepth[annPly];
+
+      if (theObj = document.getElementById("GameAnalysisEval")) {
+         theObj.innerHTML = (annEval || annEval === 0) ? ev2NAG(annEval) : "";
+         theObj.title = (annEval || annEval === 0) ? "engine evaluation: " + (annEval > 0 ? "+" : "") + annEval + (annEval == Math.floor(annEval) ? ".0" : "") + (annDepth ? "  depth: " + annDepth : "") : "";
+      }
+      if (theObj = document.getElementById("GameAnalysisPv")) {
+         theObj.innerHTML = annPv ? annPv : "";
+         theObj.title = annPv ? "engine principal variation: " + annPv : "";
+      }
+
+      updateTablebaseFlag(fenPositions[annPly]);
+   }
+
+
+   var moderateDefiniteThreshold = 1.85;
+   var slightModerateThreshold = 0.85;
+   var equalSlightThreshold = 0.25;
+
+   var useNAGeval = (NAGstyle != 'default');
+   function ev2NAG(ev) {
+      if ((ev === null) || (ev === "") || (isNaN(ev = parseFloat(ev)))) { return ""; }
+      if (!useNAGeval) { return (ev > 0 ? "+" : "") + ev + (ev == Math.floor(ev) ? ".0" : ""); }
+      if (ev < -moderateDefiniteThreshold) { return NAG[19]; } // -+
+      if (ev >  moderateDefiniteThreshold) { return NAG[18]; } // +-
+      if (ev < -slightModerateThreshold)   { return NAG[17]; } // -/+
+      if (ev >  slightModerateThreshold)   { return NAG[16]; } // +/-
+      if (ev < -equalSlightThreshold)      { return NAG[15]; } // =/+
+      if (ev >  equalSlightThreshold)      { return NAG[14]; } // +/=
+      return NAG[11];                                          // =
+   }
+
+   function clearAnalysisHeader() {
+      var theObj;
+      if (theObj = document.getElementById("GameAnalysisMove")) { theObj.innerHTML = ""; }
+      if (theObj = document.getElementById("GameAnalysisEval")) { theObj.innerHTML = "&middot;&nbsp;"; theObj.title = "start annotation"; }
+      if (theObj = document.getElementById("GameTablebase")) { theObj.style.display = "none"; }
+      if (theObj = document.getElementById("GameAnalysisPv")) { theObj.innerHTML = ""; }
+   }
+
+
+   var lastMousemoveAnnPly = -1;
+   var lastMousemoveAnnGame = -1;
+
+   function annotationGraphMouseover(e) {
+   }
+
+   function annotationGraphMouseout(e) {
+      lastMousemoveAnnPly = -1;
+      lastMousemoveAnnGame = -1;
+      if (analysisStarted) { updateAnalysisHeader(); }
+   }
+
+   function annotationGraphMousemove(e) {
+      var newMousemoveAnnPly = StartPly + Math.floor((e.pageX - document.getElementById("GameAnnotationGraph").offsetLeft) / annotationBarWidth);
+      if ((newMousemoveAnnPly !== lastMousemoveAnnPly) || (currentGame !== lastMousemoveAnnGame)) {
+         lastMousemoveAnnPly = newMousemoveAnnPly <= StartPly + PlyNumber ? newMousemoveAnnPly : -1;
+         lastMousemoveAnnGame = currentGame;
+         if (analysisStarted) { updateAnalysisHeader(); }
+      }
+   }
+
+   function annotationGraphClick(e) {
+      if ((analysisStarted) && (typeof(annotationBarWidth) != "undefined")) {
+         var annPly = StartPly + Math.floor((e.pageX - document.getElementById("GameAnnotationGraph").offsetLeft) / annotationBarWidth);
+         if ((annPly >= StartPly) && (annPly <= StartPly + PlyNumber)) {
+            if (e.shiftKey) { save_cache_to_localStorage(); }
+            else { GoToMove(annPly); }
+         }
+      }
+   }
+
+   function num2string(num) {
+      var unit = "";
+      if (num >= Math.pow(10, 12)) { num = Math.round(num / Math.pow(10, 11)) / 10;  unit = "T"; }
+      else if (num >= Math.pow(10, 9)) { num = Math.round(num / Math.pow(10, 8)) / 10;  unit = "G"; }
+      else if (num >= Math.pow(10, 6)) { num = Math.round(num / Math.pow(10, 5)) / 10; unit = "M"; }
+      else if (num >= Math.pow(10, 3)) { num = Math.round(num / Math.pow(10, 2)) / 10; unit = "K"; }
+      if ((unit !== "") && (num === Math.floor(num))) { num += ".0"; }
+      return num + unit;
+   }
+
+
+   var annotateInProgress = null;
+   var minAnnotationSeconds = Math.max(1, Math.floor(minAutoplayDelay/1000));
+   var maxAnnotationSeconds = Math.max(100, Math.floor(maxAutoplayDelay/1000));
+   var annotationSeconds_default = 15;
+   var annotationSeconds = annotationSeconds_default;
+
+   function getAnnotationSecondsFromLocalStorage() {
+      var as;
+      try { as = parseFloat(localStorage.getItem("pgn4web_chess_viewer_annotationSeconds")); }
+      catch(e) { return annotationSeconds_default; }
+      return ((as === null) || (isNaN(as))) ? annotationSeconds_default : as;
+   }
+   function setAnnotationSecondsToLocalStorage(as) {
+      try { localStorage.setItem("pgn4web_chess_viewer_annotationSeconds", as); }
+      catch(e) { return false; }
+      return true;
+   }
+
+
+   function annotateGame(promptUser) {
+      if ((checkEngineUnderstandsGameAndWarn()) && (annotationSeconds = promptUser ? prompt("Automated game" + (annotateGameMulti ? "s" : "") + " annotation from the current position; please do not interact with the chessboard until the annotation has completed.\\n\\nEnter annotation time per move, in seconds, between " + minAnnotationSeconds + " and " + maxAnnotationSeconds + ":", getAnnotationSecondsFromLocalStorage()) : getAnnotationSecondsFromLocalStorage())) {
+         if (isNaN(annotationSeconds = parseFloat(annotationSeconds))) { annotationSeconds = getAnnotationSecondsFromLocalStorage(); }
+         annotationSeconds = Math.min(maxAnnotationSeconds, Math.max(minAnnotationSeconds, annotationSeconds));
+         setAnnotationSecondsToLocalStorage(annotationSeconds);
+         SetAutoPlay(false);
+         if (!analysisStarted) {
+           scanGameForFen();
+           toggleAnalysis();
+         }
+         if (annotateInProgress) {
+            clearTimeout(annotateInProgress);
+            annotateInProgress = null;
+         }
+         var theObj = document.getElementById("GameAnnotationMessage");
+         if (theObj) {
+            theObj.innerHTML = "automated game" + (annotateGameMulti ? "s" : "") + " annotation in progress";
+            theObj.title = theObj.innerHTML + " at " + annotationSeconds + " second" + (annotationSeconds == 1 ? "" : "s") + " per move; please do not interact with the chessboard until the annotation has completed; click here to stop the automated annotation";
+            theObj.style.display = "";
+            if (theObj = document.getElementById("GameButtons")) {
+               theObj.style.display = "none";
+            }
+         }
+         annotateGameStep(CurrentPly, CurrentVar, annotationSeconds * 1000);
+      }
+   }
+
+   var annotateGameMulti = false;
+   function annotateGameStep(thisPly, thisVar, thisDelay) {
+      if (analysisStarted) {
+         GoToMove(thisPly, thisVar);
+         var thisCmd = "stopAnnotateGame(true);";
+         if (thisPly < StartPlyVar[thisVar] + PlyNumberVar[thisVar]) {
+            thisCmd = "annotateGameStep(" + (thisPly + 1) + ", " + thisVar + ", " + thisDelay + ");";
+         } else if (thisVar + 1 < numberOfVars) {
+            thisCmd = "annotateGameStep(" + (StartPlyVar[thisVar + 1] + 1) + ", " + (thisVar + 1) + ", " + thisDelay + ");";
+         } else if ((annotateGameMulti) && (currentGame + 1 < numberOfGames)) {
+            thisCmd = "Init(" + (currentGame + 1) + "); GoToMove(StartPly, 0); annotateGame(false);";
+         }
+         annotateInProgress = setTimeout(thisCmd, thisDelay);
+      } else {
+         stopAnnotateGame(false);
+         return;
+      }
+   }
+
+   function stopAnnotateGame(annotationCompleted) {
+      var theObj = document.getElementById("GameAnnotationMessage");
+      if (theObj) {
+         theObj.style.display = ((annotateInProgress) && (annotationCompleted)) ? "" : "none";
+         theObj.innerHTML = ((annotateInProgress) && (annotationCompleted)) ? "automated game" + (annotateGameMulti ? "s" : "") + " annotation completed" : "";
+         theObj.title = "";
+         if (theObj = document.getElementById("GameButtons")) {
+            theObj.style.display = ((annotateInProgress) && (annotationCompleted)) ? "none" : "";
+         }
+      }
+      if (annotateInProgress) {
+         clearTimeout(annotateInProgress);
+         annotateInProgress = null;
+      }
+   }
+
+   function engineUnderstandsGame(gameNum) {
+      return gameIsNormalChess(gameNum);
+   }
+
+   function checkEngineUnderstandsGameAndWarn() {
+      var retVal = engineUnderstandsGame(currentGame);
+      if (!retVal) { myAlert("warning: engine annotation unavailable for the " + gameVariant[currentGame] + " variant", true); }
+      return retVal;
+   }
+
+   function userToggleAnalysis() {
+      if (checkEngineUnderstandsGameAndWarn()) {
+         if (!analysisStarted) { scanGameForFen(); }
+         toggleAnalysis();
+      }
+   }
+
+   function scanGameForFen() {
+      var index;
+      var savedCurrentPly = CurrentPly;
+      var savedCurrentVar = CurrentVar;
+      var wasAutoPlayOn = isAutoPlayOn;
+      if (wasAutoPlayOn) { SetAutoPlay(false); }
+      MoveForward(StartPly + PlyNumber - savedCurrentPly, CurrentVar, true);
+      resetFenPositions();
+      while (true) {
+         fenPositions[CurrentPly] = CurrentFEN();
+         if ((index = cache_fen_lastIndexOf(fenPositions[CurrentPly])) != -1) {
+            fenPositionsEval[CurrentPly] = cache_ev[index];
+            fenPositionsPv[CurrentPly] = cache_pv[index];
+            fenPositionsDepth[CurrentPly] = cache_depth[index];
+         }
+         if (CurrentPly === StartPly) { break; }
+         MoveBackward(1, true);
+      }
+      MoveForward(savedCurrentPly - StartPly, savedCurrentVar, true);
+      updateAnnotationGraph();
+      updateAnalysisHeader();
+      if (wasAutoPlayOn) { SetAutoPlay(true); }
+   }
+
+   function goToMissingAnalysis(forward) {
+      if (!analysisStarted) { return; }
+      if (typeof(fenPositions[CurrentPly]) == "undefined") { return; }
+      if (typeof(fenPositionsEval[CurrentPly]) == "undefined") { return; }
+
+      if (typeof(forward) == "undefined") {
+         forward = ((typeof(event) != "undefined") && (typeof(event.shiftKey) != "undefined")) ? !event.shiftKey : true;
+      }
+      var wasAutoPlayOn = isAutoPlayOn;
+      if (wasAutoPlayOn) { SetAutoPlay(false); }
+      for (var thisPly = CurrentPly + (forward ? 1 : -1); ; thisPly = thisPly + (forward ? 1 : -1)) {
+         if (forward) { if (thisPly > StartPly + PlyNumber) { thisPly = StartPly; } }
+         else { if (thisPly < StartPly) { thisPly = StartPly + PlyNumber; } }
+         if (thisPly === CurrentPly) { break; }
+         if (typeof(fenPositions[thisPly]) == "undefined") { break; }
+         if (typeof(fenPositionsEval[thisPly]) == "undefined") { GoToMove(thisPly); break; }
+      }
+      if (wasAutoPlayOn) { SetAutoPlay(true); }
+   }
+
+
+   var mistakeThreshold = 0.55;
+   var blunderThreshold = 1.15;
+   var ignoreThreshold = 4.95;
+
+   function isBlunder(thisPly, threshold) {
+      if (typeof(fenPositionsEval[thisPly]) == "undefined") { return false; }
+      if (typeof(fenPositionsEval[thisPly - 1]) == "undefined") { return false; }
+      if ((fenPositionsEval[thisPly] > ignoreThreshold) && (fenPositionsEval[thisPly - 1] > ignoreThreshold)) { return false; }
+      if ((fenPositionsEval[thisPly] < -ignoreThreshold) && (fenPositionsEval[thisPly - 1] < -ignoreThreshold)) { return false; }
+      return (((thisPly % 2 ? -1 : 1) * (fenPositionsEval[thisPly] - fenPositionsEval[thisPly - 1])) > threshold);
+   }
+
+   function blunderCheck(threshold, backwards) {
+      var thisPly = StartPly + ((CurrentPly - StartPly + (backwards ? -1 : 1) + (PlyNumber + 1)) % (PlyNumber + 1));
+      while (thisPly !== CurrentPly) {
+         if (isBlunder(thisPly, threshold)) {
+            GoToMove(thisPly);
+            break;
+         }
+         thisPly = StartPly + ((thisPly - StartPly + (backwards ? -1 : 1) + (PlyNumber + 1)) % (PlyNumber + 1));
+      }
+   }
+
+   function annotationSupportedCheckAndWarnUser() {
+      if (!annotationSupported) { myAlert("warning: engine annotation unavailable", true); }
+      return annotationSupported;
+   }
+
+
+   // F5
+   boardShortcut("F5", "adjust last move and current comment text area, if present", function(t,e){ if (e.shiftKey) { resetLastCommentArea(); } else { cycleLastCommentArea(); } });
+
+   // A6
+   boardShortcut("A6", "go to previous annotated blunder", function(t,e){ if (annotationSupportedCheckAndWarnUser()) { if (e.shiftKey) { GoToMove(CurrentPly - 1); } else { if (!analysisStarted) { userToggleAnalysis(); } blunderCheck(blunderThreshold, true); } } });
+   // B6
+   boardShortcut("B6", "go to previous annotated mistake", function(t,e){ if (annotationSupportedCheckAndWarnUser()) { if (e.shiftKey) { GoToMove(CurrentPly - 1); } else { if (!analysisStarted) { userToggleAnalysis(); } blunderCheck(mistakeThreshold, true); } } });
+   // G6
+   boardShortcut("G6", "go to next annotated mistake", function(t,e){ if (annotationSupportedCheckAndWarnUser()) { if (e.shiftKey) { GoToMove(CurrentPly - 1); } else { if (!analysisStarted) { userToggleAnalysis(); } blunderCheck(mistakeThreshold, false); } } });
+   // H6
+   boardShortcut("H6", "go to next annotated blunder", function(t,e){ if (annotationSupportedCheckAndWarnUser()) { if (e.shiftKey) { GoToMove(CurrentPly - 1); } else { if (!analysisStarted) { userToggleAnalysis(); } blunderCheck(blunderThreshold, false); } } });
+
+   // G5
+   boardShortcut("G5", "start/stop automated game annotation", function(t,e){ if (annotationSupportedCheckAndWarnUser()) { annotateGameMulti = e.shiftKey; if (annotateInProgress) { stopAnnotateGame(false); } else { annotateGame(true); } } });
+   // H5
+   boardShortcut("H5", "start/stop annotation", function(t,e){ if (annotationSupportedCheckAndWarnUser()) { if (e.shiftKey) { if (confirm("clear annotation cache, all current and stored annotation data will be lost")) { clear_cache_from_localStorage(); cache_clear(); if (analysisStarted) { updateAnnotationGraph(); updateAnalysisHeader(); } } } else { userToggleAnalysis(); } } });
+
+
+   var pgn4web_chess_engine_id = "garbochess-pgn4web-" + pgn4web_version;
+
+   var engineWorker = "libs/garbochess/garbochess.js";
+
+   var g_backgroundEngine;
+   var g_topNodesPerSecond = 0;
+   var g_ev = "";
+   var g_maxEv = 99.9;
+   var g_pv = "";
+   var g_depth = "";
+   var g_nodes = "";
+   var g_initErrors = 0;
+   var g_lastFenError = "";
+
+   function InitializeBackgroundEngine() {
+
+      if (!g_backgroundEngine) {
+         try {
+            g_backgroundEngine = new Worker(engineWorker);
+            g_backgroundEngine.addEventListener("message", function (e) {
+               if ((e.data.match("^pv")) && (fenString == CurrentFEN())) {
+                  var matches = e.data.substr(3, e.data.length - 3).match(/Ply:(\d+) Score:(-*\d+) Nodes:(\d+) NPS:(\d+) (.*)/);
+                  if (matches) {
+                     g_depth = parseInt(matches[1], 10);
+                     if (isNaN(g_ev = parseInt(matches[2], 10))) {
+                        g_ev = "";
+                     } else {
+                        g_ev = Math.round(g_ev / 100) / 10;
+                        if (g_ev < -g_maxEv) { g_ev = -g_maxEv; } else if (g_ev > g_maxEv) { g_ev = g_maxEv; }
+                        if (fenString.indexOf(" b ") !== -1) { g_ev = -g_ev; }
+                     }
+                     g_nodes = parseInt(matches[3], 10);
+                     var nodesPerSecond = parseInt(matches[4], 10);
+                     g_topNodesPerSecond = Math.max(nodesPerSecond, g_topNodesPerSecond);
+                     g_pv = matches[5].replace(/(^\s+|\s*[x+=]|\s+$)/g, "").replace(/\s*stalemate/, "=").replace(/\s*checkmate/, "#"); // patch: pgn notation: remove/add '+' 'x' '=' chars for full chess informant style or pgn style for the game text
+                     if (searchMeaningful()) {
+                        validateSearchWithCache();
+                        if ((typeof(fenPositionsDepth[CurrentPly]) == "undefined") || (g_depth > fenPositionsDepth[CurrentPly])) {
+                           fenPositionsEval[CurrentPly] = g_ev;
+                           fenPositionsPv[CurrentPly] = g_pv;
+                           fenPositionsDepth[CurrentPly] = g_depth;
+                           updateAnnotationGraph();
+                           updateAnalysisHeader();
+                        }
+                     }
+                     if (detectGameEnd(g_pv, "")) { StopBackgroundEngine(); }
+                  }
+               } else if (e.data.match("^message Invalid FEN")) {
+                  stopAnalysis();
+                  if (fenString != g_lastFenError) {
+                     g_lastFenError = fenString;
+                     myAlert("error: engine: " + e.data.replace(/^message /, "") + "\\n" + fenString);
+                  }
+               }
+            }, false);
+            g_initErrors = 0;
+            return true;
+         } catch(e) {
+            stopAnalysis();
+            if (!g_initErrors++) { myAlert("error: engine exception " + e); }
+            return false;
+         }
+      }
+   }
+
+   var cache_local_storage_prefix = "pgn4web_chess_viewer_engine_cache_"; // default "pgn4web_chess_engine_cache_"
+
+   var localStorage_supported;
+   try { localStorage_supported = (("localStorage" in window) && (window["localStorage"] !== null)); }
+   catch(e) { localStorage_supported = false; }
+
+   function load_cache_from_localStorage() {
+      if (!localStorage_supported) { return; }
+      if (pgn4web_chess_engine_id != localStorage[cache_local_storage_prefix + "id"]) {
+         clear_cache_from_localStorage();
+         localStorage[cache_local_storage_prefix + "id"] = pgn4web_chess_engine_id;
+         return;
+      }
+      if (cache_pointer = localStorage[cache_local_storage_prefix + "pointer"]) {
+         cache_pointer = parseInt(cache_pointer, 10) % cache_max;
+      } else { cache_pointer = -1; }
+      if (cache_fen = localStorage[cache_local_storage_prefix + "fen"]) {
+         cache_fen = cache_fen.split(",");
+      } else { cache_fen = new Array(); }
+      if (cache_ev = localStorage[cache_local_storage_prefix + "ev"]) {
+         cache_ev = cache_ev.split(",");
+         if (typeof(cache_ev.map == "function")) { cache_ev = cache_ev.map(parseFloat); }
+      } else { cache_ev = new Array(); }
+      if (cache_pv = localStorage[cache_local_storage_prefix + "pv"]) {
+         cache_pv = cache_pv.split(",");
+      } else { cache_pv = new Array(); }
+      if (cache_depth = localStorage[cache_local_storage_prefix + "depth"]) {
+         cache_depth = cache_depth.split(",");
+         if (typeof(cache_depth.map == "function")) { cache_depth = cache_depth.map(parseFloat); }
+      } else { cache_depth = new Array(); }
+      cache_needs_sync = 0;
+      if ((cache_fen.length !== cache_ev.length) || (cache_fen.length !== cache_pv.length) || (cache_fen.length !== cache_depth.length)) {
+         clear_cache_from_localStorage();
+         cache_clear();
+      }
+   }
+
+   function save_cache_to_localStorage() {
+      if (!localStorage_supported) { return; }
+      if (!cache_needs_sync) { return; }
+      localStorage[cache_local_storage_prefix + "pointer"] = cache_pointer;
+      localStorage[cache_local_storage_prefix + "fen"] = cache_fen.toString();
+      localStorage[cache_local_storage_prefix + "ev"] = cache_ev.toString();
+      localStorage[cache_local_storage_prefix + "pv"] = cache_pv.toString();
+      localStorage[cache_local_storage_prefix + "depth"] = cache_depth.toString();
+      cache_needs_sync = 0;
+   }
+
+   function clear_cache_from_localStorage() {
+      if (!localStorage_supported) { return; }
+      localStorage.removeItem(cache_local_storage_prefix + "pointer");
+      localStorage.removeItem(cache_local_storage_prefix + "fen");
+      localStorage.removeItem(cache_local_storage_prefix + "ev");
+      localStorage.removeItem(cache_local_storage_prefix + "pv");
+      localStorage.removeItem(cache_local_storage_prefix + "depth");
+      localStorage.removeItem(cache_local_storage_prefix + "nodes"); // backward compatibility
+      cache_needs_sync++;
+   }
+
+   function cacheDebugInfo() {
+      var dbg = "";
+      if (localStorage_supported) {
+         dbg += " cache=";
+         try {
+            dbg += num2string(localStorage[cache_local_storage_prefix + "pointer"].length + localStorage[cache_local_storage_prefix + "fen"].length + localStorage[cache_local_storage_prefix + "ev"].length + localStorage[cache_local_storage_prefix + "pv"].length + localStorage[cache_local_storage_prefix + "depth"].length);
+         } catch(e) {
+            dbg += "0";
+         }
+      }
+      return dbg;
+   }
+
+   var cache_pointer = -1;
+   var cache_max = 8000; // ~ 64 games of 60 moves ~ 1MB of local storage
+   var cache_fen = new Array();
+   var cache_ev = new Array();
+   var cache_pv = new Array();
+   var cache_depth = new Array();
+
+   var cache_needs_sync = 0;
+
+   load_cache_from_localStorage();
+
+   function searchMeaningful() {
+      var minNodesForAnnotation = 12345;
+      return ((g_nodes > minNodesForAnnotation) || (g_ev === g_maxEv) || (g_ev === -g_maxEv) || (g_ev === 0));
+   }
+
+   function validateSearchWithCache() {
+      var id = cache_fen_lastIndexOf(fenString);
+      if (id == -1) {
+         cache_last = cache_pointer = (cache_pointer + 1) % cache_max;
+         cache_fen[cache_pointer] = fenString.replace(/\s+\d+\s+\d+\s*$/, "");
+         cache_ev[cache_pointer] = g_ev;
+         cache_pv[cache_pointer] = g_pv;
+         cache_depth[cache_pointer] = g_depth;
+         cache_needs_sync++;
+      } else {
+         if (g_depth > cache_depth[id]) {
+            cache_ev[id] = g_ev;
+            cache_pv[id] = g_pv;
+            cache_depth[id] = g_depth;
+            cache_needs_sync++;
+         } else {
+            g_ev = parseFloat(cache_ev[id]);
+            g_pv = cache_pv[id];
+            g_depth = parseInt(cache_depth[id], 10);
+         }
+      }
+      if (cache_needs_sync > 3) { save_cache_to_localStorage(); }
+   }
+
+   var cache_last = 0;
+   function cache_fen_lastIndexOf(fenString) {
+      fenString = fenString.replace(/\s+\d+\s+\d+\s*$/, "");
+      if (fenString === cache_fen[cache_last]) { return cache_last; }
+      if (typeof(cache_fen.lastIndexOf) == "function") { return (cache_last = cache_fen.lastIndexOf(fenString)); }
+      for (var n = cache_fen.length - 1; n >= 0; n--) {
+         if (fenString === cache_fen[n]) { return (cache_last = n); }
+      }
+      return -1;
+   }
+
+   function cache_clear() {
+      cache_pointer = -1;
+      cache_fen = new Array();
+      cache_ev = new Array();
+      cache_pv = new Array();
+      cache_depth = new Array();
+   }
+
+
+   function StopBackgroundEngine() {
+      if (analysisTimeout) { clearTimeout(analysisTimeout); }
+      if (g_backgroundEngine) {
+         g_backgroundEngine.terminate();
+         g_backgroundEngine = null;
+      }
+   }
+
+   var analysisTimeout;
+   function setAnalysisTimeout(seconds) {
+      if (analysisTimeout) { clearTimeout(analysisTimeout); }
+      analysisTimeout = setTimeout("analysisTimeout = null; save_cache_to_localStorage(); StopBackgroundEngine();", seconds * 1000);
+   }
+
+   var fenString;
+   function StartEngineAnalysis() {
+      StopBackgroundEngine();
+      if (InitializeBackgroundEngine()) {
+         fenString = CurrentFEN();
+         g_backgroundEngine.postMessage("position " + fenString);
+         g_backgroundEngine.postMessage("analyze");
+         setAnalysisTimeout(analysisSeconds);
+         return true;
+      } else {
+         stopAnnotateGame(false);
+         return false;
+      }
+   }
+
+   var analysisSeconds = 300;
+
+   function detectGameEnd(pv, FEN) {
+      if ((pv !== "") && (pv.match(/^[#=]/))) { return true; }
+      var matches = FEN.match(/\s*\S+\s+\S+\s+\S+\s+\S+\s+(\d+)\s+\S+\s*/);
+      if ((matches) && (parseInt(matches[1], 10) > 100)) { return true; }
+      return false;
+   }
+
+   function customDebugInfo() {
+      var dbg = "initialHalfmove=" + initialHalfmove;
+      dbg += " annotation=";
+      if (!annotationSupported) { dbg += "unavailable"; }
+      else if (!analysisStarted) { dbg += "disabled"; }
+      else { dbg += (g_backgroundEngine ? ( annotateInProgress ? ("automatedGame" + (annotateGameMulti ? "s" : "") + " annotationSeconds=" + getAnnotationSecondsFromLocalStorage()) : "pondering") : "idle") + " analysisSeconds=" + analysisSeconds + " topNodesPerSecond=" + num2string(g_topNodesPerSecond) + cacheDebugInfo(); }
+      if ("$forceEncodingFrom") { dbg += " forceEncodingFrom=$forceEncodingFrom"; }
+      return dbg;
+   }
+
+   window.onunload = function() {
+      setDelayToLocalStorage(Delay);
+      setHighlightOptionToLocalStorage(highlightOption);
+      setCommentsIntoMoveTextToLocalStorage(commentsIntoMoveText);
+      setCommentsOnSeparateLinesToLocalStorage(commentsOnSeparateLines);
+      if (analysisStarted) { stopAnalysis(); }
+   };
+
+</script>
+
 
 END;
 }
 
 function print_footer() {
 
-  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $tmpDir, $debugHelpText, $pgnDebugInfo;
-  global $fileUploadLimitText, $fileUploadLimitBytes, $krabbeStartPosition, $goToView, $mode, $zipSupported;
+  global $pgnText, $pgnTextbox, $pgnUrl, $pgnFileName, $pgnFileSize, $pgnStatus, $forceEncodingFrom, $tmpDir, $debugHelpText, $pgnDebugInfo;
+  global $fileUploadLimitIniText, $fileUploadLimitText, $fileUploadLimitBytes, $startPosition, $goToView, $zipSupported;
 
-  if ($goToView) { $hashStatement = "window.location.hash = 'view';"; }
+  if ($goToView) { $hashStatement = "  goToHash('board');"; }
   else { $hashStatement = ""; }
 
-  if (($pgnDebugInfo) != "") { $pgnDebugMessage = "message for sysadmin: " . $pgnDebugInfo; }
+  if (($pgnDebugInfo) != "") { $pgnDebugMessage = "warning: system: " . $pgnDebugInfo; }
   else {$pgnDebugMessage = ""; }
 
   print <<<END
 
-<div>&nbsp;</div>
-<table width=100% cellpadding=0 cellspacing=0 border=0><tr><td valign=bottom align=left>
-<div style="color: gray; margin-top: 1em; margin-bottom: 1em;">$pgnDebugMessage</div>
-</td><td valign=bottom align=right>
-&nbsp;&nbsp;&nbsp;<a href="#moves" style="color: gray; font-size: 66%;">moves</a>&nbsp;&nbsp;&nbsp;<a href="#view" style="color: gray; font-size: 66%;">board</a>&nbsp;&nbsp;&nbsp;<a href="#top" style="color: gray; font-size: 66%;">form</a>
-</tr></table>
-
 <script type="text/javascript">
+"use strict";
 
-function new_start_pgn4web() {
+function pgn4web_onload(e) {
   setPgnUrl("$pgnUrl");
   checkPgnFormTextSize();
   start_pgn4web();
-  $hashStatement
+  if ("$pgnDebugMessage".length > 0) { myAlert("$pgnDebugMessage", false, true); }
+$hashStatement
 }
 
-window.onload = new_start_pgn4web;
-
 </script>
+
+END;
+}
+
+function print_html_close() {
+
+  print <<<END
 
 </body>
 
 </html>
-
 END;
 }
 
